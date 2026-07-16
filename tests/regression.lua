@@ -36,6 +36,33 @@ local function assert_single_file(pattern, context)
     return files[1]
 end
 
+local function assert_verilog_filelist(filelist, artifactdir, context)
+    if not os.isfile(filelist) then
+        raise("%s: missing Verilog filelist %s", context, filelist)
+    end
+    local root = path.normalize(path.absolute(artifactdir))
+    local lines = {}
+    for line in (io.readfile(filelist) or ""):gmatch("[^\r\n]+") do
+        if not path.is_absolute(line) then
+            raise("%s: Verilog filelist contains a non-absolute path: %s", context, line)
+        end
+        local normalized = path.normalize(line)
+        if normalized ~= root and normalized:sub(1, #root + 1) ~= root .. "/" then
+            raise("%s: Verilog artifact is outside public directory %s: %s", context, root, normalized)
+        end
+        table.insert(lines, normalized)
+    end
+    if #lines == 0 then
+        raise("%s: Verilog filelist is empty: %s", context, filelist)
+    end
+    local sorted = table.clone(lines)
+    table.sort(sorted)
+    if table.concat(lines, "\n") ~= table.concat(sorted, "\n") then
+        raise("%s: Verilog filelist is not deterministically sorted: %s", context, filelist)
+    end
+    return lines
+end
+
 local function copy_case(root, workroot, name)
     local source = path.join(root, "tests", "cases", name)
     local destination = path.join(workroot, name)
@@ -96,16 +123,16 @@ local function test_incremental(root, workroot, run)
     assert_contains(first, "compiling Bluespec package Other", "initial package build")
     assert_contains(first, "compiling Bluespec package Base", "initial package build")
     assert_contains(first, "compiling Bluespec package Consumer", "initial package build")
-    local root_outputs = assert_file(path.join(projectdir, "build", "**", "packages", "Base.bo"),
+    local root_outputs = assert_file(path.join(projectdir, "build", "**", "bdir", "Base.bo"),
         "provider package artifact")
     if #root_outputs ~= 1 then
         raise("provider package was compiled into %d output directories; expected exactly one", #root_outputs)
     end
-    assert_file(path.join(projectdir, "build", "**", "packages", "Consumer.bo"),
+    assert_file(path.join(projectdir, "build", "**", "bdir", "Consumer.bo"),
         "consumer package artifact")
-    local old_leaf_bo = assert_single_file(path.join(projectdir, "build", "**", "packages", "Leaf.bo"),
+    local old_leaf_bo = assert_single_file(path.join(projectdir, "build", "**", "bdir", "Leaf.bo"),
         "leaf package artifact")
-    local old_other_bo = assert_single_file(path.join(projectdir, "build", "**", "packages", "Other.bo"),
+    local old_other_bo = assert_single_file(path.join(projectdir, "build", "**", "bdir", "Other.bo"),
         "unrelated package artifact")
 
     local initial_rtl = run(projectdir, {"build", "rtl"}, {context = "initial incremental backend"})
@@ -164,7 +191,7 @@ endpackage
     assert_contains(import_changed, "compiling Bluespec package Consumer", "dynamic import invalidation")
     assert_not_contains(import_changed, "compiling Bluespec package Leaf", "dynamic import invalidation")
     assert_not_contains(import_changed, "compiling Bluespec package Other", "dynamic import invalidation")
-    assert_file(path.join(projectdir, "build", "**", "packages", "Added.bo"),
+    assert_file(path.join(projectdir, "build", "**", "bdir", "Added.bo"),
         "dynamic import package artifact")
     if os.isfile(old_leaf_bo) or os.isfile(old_other_bo) then
         raise("removed packages left stale .bo artifacts after the import graph changed")
@@ -182,7 +209,7 @@ local function test_generated(root, workroot, run)
     assert_contains(output, "generating Generated.bsv", "generated BSV build")
     assert_contains(output, "scanning Bluespec generated", "generated BSV build")
     assert_contains(output, "compiling Bluespec package Generated", "generated BSV build")
-    assert_file(path.join(projectdir, "build", "**", "packages", "Generated.bo"),
+    assert_file(path.join(projectdir, "build", "**", "bdir", "Generated.bo"),
         "generated BSV artifact")
 
     local cached = run(projectdir, {"build", "generated"}, {context = "generated BSV cache hit"})
@@ -197,7 +224,7 @@ local function test_generated(root, workroot, run)
     assert_contains(import_added, "scanning Bluespec generated", "generated import addition")
     assert_contains(import_added, "compiling Bluespec package Extra", "generated import addition")
     assert_contains(import_added, "compiling Bluespec package Generated", "generated import addition")
-    local extra_bo = assert_single_file(path.join(projectdir, "build", "**", "packages", "Extra.bo"),
+    local extra_bo = assert_single_file(path.join(projectdir, "build", "**", "bdir", "Extra.bo"),
         "generated dependency artifact")
 
     local import_cached = run(projectdir, {"build", "generated"}, {context = "generated import cache hit"})
@@ -292,28 +319,67 @@ local function test_backends(root, workroot, run)
     local sim_cached = run(projectdir, {"build", "sim"}, {context = "cached Bluesim build"})
     assert_not_contains(sim_cached, "building Bluespec bluesim", "cached Bluesim build")
 
-    local rtl = run(projectdir, {"build", "rtl"}, {context = "Verilog build"})
+    local rtl = run(projectdir, {"build", "rtl_consumer"}, {context = "Verilog public artifact build"})
     assert_contains(rtl, "building Bluespec verilog rtl", "Verilog build")
-    local filelists = assert_file(path.join(projectdir, "build", "**", "verilog", "rtl.f"),
-        "Verilog filelist")
-    if #filelists ~= 1 then
-        raise("Verilog build produced %d rtl.f files; expected one", #filelists)
+    local default_builddir = path.join(projectdir, "build")
+    local default_filelist = path.join(default_builddir, "Verilog", "rtl.f")
+    local default_rtl_dir = path.join(default_builddir, "Verilog", "rtl")
+    assert_contains(rtl, "processing Verilog targetfile " .. default_filelist,
+        "standard targetfile consumer")
+    assert_verilog_filelist(default_filelist, default_rtl_dir, "default Verilog targetfile")
+    local processed = path.join(default_builddir, "processed", "rtl.f")
+    if io.readfile(processed) ~= io.readfile(default_filelist) then
+        raise("downstream Xmake consumer did not process the public targetfile")
     end
-    local lines = {}
-    for line in (io.readfile(filelists[1]) or ""):gmatch("[^\r\n]+") do
-        if not path.is_absolute(line) then
-            raise("Verilog filelist contains a non-absolute path: %s", line)
-        end
-        table.insert(lines, line)
+
+    local rtl_cached = run(projectdir, {"build", "rtl_consumer"},
+        {context = "cached Verilog public artifact"})
+    assert_bluespec_cache_hit(rtl_cached, "cached Verilog public artifact")
+    assert_not_contains(rtl_cached, "processing Verilog targetfile", "cached Verilog consumer")
+
+    local source = path.join(projectdir, "src", "Top.bsv")
+    local source_contents = assert(io.readfile(source), "missing Verilog regression source")
+    local old_filelist_mtime = os.mtime(default_filelist)
+    os.sleep(1100)
+    io.writefile(source, source_contents .. "\n// force Verilog backend invalidation\n")
+    local invalidated = run(projectdir, {"build", "rtl_consumer"},
+        {context = "Verilog backend invalidation"})
+    assert_contains(invalidated, "scanning Bluespec rtl", "Verilog backend invalidation")
+    assert_contains(invalidated, "compiling Bluespec package Top", "Verilog backend invalidation")
+    assert_contains(invalidated, "building Bluespec verilog rtl", "Verilog backend invalidation")
+    assert_contains(invalidated, "processing Verilog targetfile " .. default_filelist,
+        "downstream Verilog invalidation")
+    if os.mtime(default_filelist) == old_filelist_mtime then
+        raise("Verilog backend invalidation did not update the public targetfile")
     end
-    if #lines == 0 then
-        raise("Verilog filelist is empty: %s", filelists[1])
+    assert_verilog_filelist(default_filelist, default_rtl_dir, "invalidated Verilog targetfile")
+
+    local default_filelist_mtime = os.mtime(default_filelist)
+    local default_filelist_contents = io.readfile(default_filelist)
+    run(projectdir, {"config", "-c", "-o", "alt-build"}, {context = "configure alt Verilog builddir"})
+    local alt = run(projectdir, {"build", "rtl_consumer"}, {context = "alt Verilog builddir"})
+    local alt_builddir = path.join(projectdir, "alt-build")
+    local alt_filelist = path.join(alt_builddir, "Verilog", "rtl.f")
+    local alt_rtl_dir = path.join(alt_builddir, "Verilog", "rtl")
+    assert_contains(alt, "building Bluespec verilog rtl", "alt Verilog builddir")
+    assert_contains(alt, "processing Verilog targetfile " .. alt_filelist,
+        "alt standard targetfile consumer")
+    assert_verilog_filelist(alt_filelist, alt_rtl_dir, "alt Verilog targetfile")
+    if os.mtime(default_filelist) ~= default_filelist_mtime or
+        io.readfile(default_filelist) ~= default_filelist_contents then
+        raise("alt Verilog builddir rewrote the default public targetfile")
     end
-    local sorted = table.clone(lines)
-    table.sort(sorted)
-    if table.concat(lines, "\n") ~= table.concat(sorted, "\n") then
-        raise("Verilog filelist is not deterministically sorted: %s", filelists[1])
-    end
+
+    local alt_cached = run(projectdir, {"build", "rtl_consumer"},
+        {context = "cached alt Verilog builddir"})
+    assert_bluespec_cache_hit(alt_cached, "cached alt Verilog builddir")
+    assert_not_contains(alt_cached, "processing Verilog targetfile", "cached alt Verilog consumer")
+
+    run(projectdir, {"config", "-c", "-o", "build"}, {context = "restore Verilog builddir"})
+    local restored = run(projectdir, {"build", "rtl_consumer"}, {context = "restored Verilog builddir"})
+    assert_bluespec_cache_hit(restored, "restored Verilog builddir")
+    assert_not_contains(restored, "processing Verilog targetfile", "restored Verilog consumer")
+    assert_not_contains(restored, alt_filelist, "restored Verilog targetfile")
 end
 
 local function test_native_bdpi_builddir(root, workroot, run)
@@ -328,7 +394,7 @@ local function test_native_bdpi_builddir(root, workroot, run)
     assert_contains(initial, "-fPIC", "native BDPI PIC build")
 
     local builddir = path.join(projectdir, "build")
-    local old_bo = assert_single_file(path.join(builddir, "**", "packages", "NativeBDPI.bo"),
+    local old_bo = assert_single_file(path.join(builddir, "**", "bdir", "NativeBDPI.bo"),
         "default builddir package")
     local old_golden = assert_single_file(path.join(builddir, "**", "libgolden.a"),
         "direct native archive")
@@ -370,13 +436,13 @@ local function test_native_bdpi_builddir(root, workroot, run)
     assert_not_contains(alt, path.directory(old_bo), "alt builddir package command")
 
     local alt_builddir = path.join(projectdir, "alt-build")
-    local alt_bo = assert_single_file(path.join(alt_builddir, "**", "packages", "NativeBDPI.bo"),
+    local alt_bo = assert_single_file(path.join(alt_builddir, "**", "bdir", "NativeBDPI.bo"),
         "alt builddir package")
     assert_single_file(path.join(alt_builddir, "**", "libgolden.a"), "alt direct native archive")
     assert_single_file(path.join(alt_builddir, "**", "libgolden_helper.a"), "alt transitive native archive")
-    assert_single_file(path.join(alt_builddir, "**", "bluesim", "model_mkNativeBDPI.cxx"),
+    assert_single_file(path.join(alt_builddir, "**", "simdir", "model_mkNativeBDPI.cxx"),
         "alt Bluesim generated source")
-    assert_single_file(path.join(alt_builddir, "**", "bluesim", "model_mkNativeBDPI.o"),
+    assert_single_file(path.join(alt_builddir, "**", "simdir", "model_mkNativeBDPI.o"),
         "alt Bluesim generated object")
     local alt_executable = path.join(alt_builddir, "bin", "native_bdpi")
     assert_file(alt_executable, "alt Bluesim executable")

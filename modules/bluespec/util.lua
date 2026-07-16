@@ -173,6 +173,39 @@ function backend_dir(target, backend)
     return dir
 end
 
+function bdir(target)
+    return backend_dir(target, "bdir")
+end
+
+function infodir(target)
+    return backend_dir(target, "info")
+end
+
+function simdir(target)
+    return backend_dir(target, "simdir")
+end
+
+function verilog_filelist(target)
+    local filelist = target:targetfile()
+    if not filelist then
+        raise("bluespec.verilog target(%s) has no public targetfile", target:name())
+    end
+    return path.absolute(filelist)
+end
+
+function verilog_dir(target)
+    local filelist = verilog_filelist(target)
+    local filename = path.filename(filelist)
+    local extension = path.extension(filename)
+    local dirname
+    if extension ~= "" then
+        dirname = filename:sub(1, #filename - #extension)
+    else
+        dirname = filename .. ".rtl"
+    end
+    return path.join(path.directory(filelist), dirname)
+end
+
 function bool(value)
     return value == true or value == "true" or value == "1" or value == 1
 end

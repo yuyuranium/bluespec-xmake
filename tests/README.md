@@ -12,9 +12,10 @@ dynamic import edge changes, dependency `.bo` reuse, generated BSV input/config
 invalidation and cache hits, valued/valueless defines and define
 invalidation/propagation, Bluesim execution/output placement,
 direct/transitive static BDPI dependencies, builddir graph isolation,
-deterministic Verilog filelists, cycles, duplicate providers, and unexported
-packages.  It does not require a shell/Python test script or produce a public
-manifest.
+deterministic Verilog filelists exposed through standard `targetfile()`,
+downstream filelist invalidation, Verilog builddir relocation, cycles,
+duplicate providers, and unexported packages.  It does not require a
+shell/Python test script or produce a public manifest.
 
 Generated BSV that feeds dependency scanning must be produced by a generator
 target's prepare hook.  A normal `on_build` hook is too late because Xmake
@@ -35,10 +36,12 @@ nix-shell --run 'xmake build -P tests/fixture rtl'
 ```
 
 `check` imports the `.bo` files produced by `common`; its output directory
-contains only `Check.bo`.  `rtl` writes a sorted, absolute-path `rtl.f` next to
-the generated Verilog.  `sim` also depends on the ordinary Xmake static target
-`native` (the same path used for BDPI libraries).  SystemC additionally needs a
-SystemC SDK in the compiler include/link paths:
+contains only `Check.bo`.  `rtl` exposes a sorted, absolute-path `rtl.f` as its
+standard Xmake targetfile (by default `build/Verilog/rtl.f`, listing
+`build/Verilog/rtl/*.v`).  `sim` also
+depends on the ordinary Xmake static target `native` (the same path used for
+BDPI libraries).  SystemC additionally needs a SystemC SDK in the compiler
+include/link paths:
 
 ```sh
 nix-shell -p xmake bluespec systemc --run \

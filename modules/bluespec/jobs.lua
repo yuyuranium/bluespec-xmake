@@ -194,16 +194,15 @@ end
 
 local function backend_args(target, graph, backend, phase)
     local program, args = tools.package_args(target, graph, nil, backend)
-    local outdir = util.backend_dir(target, backend)
     if backend == "bluesim" then
         table.insert(args, "-simdir")
-        table.insert(args, outdir)
+        table.insert(args, util.simdir(target))
     elseif backend == "verilog" then
         table.insert(args, "-vdir")
-        table.insert(args, outdir)
+        table.insert(args, util.verilog_dir(target))
     elseif backend == "systemc" then
         table.insert(args, "-simdir")
-        table.insert(args, outdir)
+        table.insert(args, util.backend_dir(target, "systemc"))
     end
     if phase == "generate" then
         if backend == "systemc" then
@@ -326,7 +325,9 @@ local function build_systemc(target, graph)
 end
 
 local function build_verilog(target, graph)
-    local rtl_dir = util.backend_dir(target, "verilog")
+    local filelist = util.verilog_filelist(target)
+    os.rm(filelist)
+    local rtl_dir = util.verilog_dir(target)
     os.rm(rtl_dir)
     os.mkdir(rtl_dir)
     local program, args = backend_args(target, graph, "verilog", "generate")
@@ -336,17 +337,16 @@ local function build_verilog(target, graph)
     if #files == 0 then
         raise("BSC Verilog backend produced no Verilog files for target(%s)", target:name())
     end
-    local filelist = path.join(rtl_dir, target:name() .. ".f")
     local lines = {}
     for _, file in ipairs(files) do
         table.insert(lines, file)
     end
+    os.mkdir(path.directory(filelist))
     io.writefile(filelist, table.concat(lines, "\n") .. "\n")
-    target:data_set("bluespec.verilog.filelist", filelist)
 end
 
 local function build_bluesim(target, graph)
-    local sim_dir = util.backend_dir(target, "bluesim")
+    local sim_dir = util.simdir(target)
     os.rm(sim_dir)
     os.mkdir(sim_dir)
     local program, args = backend_args(target, graph, "bluesim", "generate")
@@ -382,8 +382,8 @@ local function backend_ready(target, graph, backend)
         local output = path.absolute(target:targetfile())
         return os.isfile(output) and os.isfile(output .. ".so")
     elseif backend == "verilog" then
-        local directory = util.backend_dir(target, "verilog")
-        return os.isfile(path.join(directory, target:name() .. ".f")) and
+        local directory = util.verilog_dir(target)
+        return os.isfile(util.verilog_filelist(target)) and
             #os.files(path.join(directory, "*.v")) > 0
     elseif backend == "systemc" then
         local include_dir = path.join(util.backend_dir(target, "systemc"), "include")
@@ -407,7 +407,7 @@ end
 local function backend_depend(target, graph, backend, callback)
     local marker
     if backend == "verilog" then
-        marker = path.join(util.backend_dir(target, "verilog"), target:name() .. ".f")
+        marker = util.verilog_filelist(target)
     else
         marker = path.absolute(target:targetfile())
     end

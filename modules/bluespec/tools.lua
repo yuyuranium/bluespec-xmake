@@ -156,6 +156,8 @@ function package_args(target, graph, package, backend)
     end
     table.insert(args, "-bdir")
     table.insert(args, outdir)
+    table.insert(args, "-info-dir")
+    table.insert(args, util.infodir(target))
     table.insert(args, "-p")
     table.insert(args, util.concat_path_list(dirs))
     for _, define in ipairs(graph.effective_defines or {}) do

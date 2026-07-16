@@ -240,7 +240,7 @@ local function validate_local_sources(config)
 end
 
 local function finalize(target, parsed, config, deps)
-    local output_dir = path.join(util.backend_dir(target, "packages"))
+    local output_dir = util.bdir(target)
     local providers = provider_index(deps)
     local packages = parsed.packages
     local exports = {}
@@ -328,7 +328,7 @@ local function finalize(target, parsed, config, deps)
     })
 
     return {
-        schema = 3,
+        schema = 4,
         target = target:fullname(),
         root = parsed.root,
         root_name = parsed.root_name,

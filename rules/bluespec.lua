@@ -70,7 +70,25 @@ local function define_rule(name, backend, default_kind, needs_top)
                 target:add("files", root, {rules = name})
                 target:data_set("bluespec.root_added", true)
             end
-            if default_kind and target:kind() == "binary" and backend ~= "bluesim" then
+            if backend == "verilog" then
+                -- A phony target has no targetfile() in Xmake.  Model the
+                -- deterministic filelist as this custom-built target's
+                -- primary artifact so ordinary dependency consumers can use
+                -- dep:targetfile() without knowing the internal RTL layout.
+                target:set("kind", "binary")
+                if not target:get("targetdir") then
+                    local targetdir = path.join(config.builddir(), "Verilog")
+                    local namespace = target:namespace()
+                    if namespace then
+                        namespace = namespace:gsub("::", "/")
+                        targetdir = path.join(targetdir, namespace)
+                    end
+                    target:set("targetdir", targetdir)
+                end
+                if not target:get("filename") then
+                    target:set("filename", target:name() .. ".f")
+                end
+            elseif default_kind and target:kind() == "binary" and backend ~= "bluesim" then
                 target:set("kind", default_kind)
             end
             if needs_top then
@@ -118,6 +136,10 @@ local function define_rule(name, backend, default_kind, needs_top)
         on_clean(function(target)
             local util = import("bluespec.util")
             os.rm(util.state_dir(target))
+            if backend == "verilog" and target:targetfile() then
+                os.rm(util.verilog_filelist(target))
+                os.rm(util.verilog_dir(target))
+            end
         end)
 end
 

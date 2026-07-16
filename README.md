@@ -45,6 +45,20 @@ target("sim")
     add_rules("bluespec.bluesim")
     set_bsc_root("src/Top.bsv")
     set_bsc_top("mkTop")
+
+target("rtl")
+    add_rules("bluespec.verilog")
+    set_bsc_root("src/Top.bsv")
+    set_bsc_top("mkTop")
+
+target("rtl_consumer")
+    set_kind("phony")
+    add_deps("rtl")
+    on_build(function(target)
+        local filelist = assert(target:dep("rtl"):targetfile())
+        local contents = assert(io.readfile(path.absolute(filelist)))
+        -- Process `contents` and its listed RTL with pure Xmake Lua.
+    end)
 ```
 
 The other backend rules are `bluespec.verilog` and `bluespec.systemc`.
@@ -79,8 +93,17 @@ setting.  On memory-constrained machines, select a lower job count with
 ## Artifacts and incremental state
 
 Only build artifacts are exposed: `.bo`, Bluesim output (the executable defaults
-to `build/bin/<target>`), Verilog plus a sorted
-`.f` filelist, or SystemC generated sources/headers and a static archive.
+to `build/bin/<target>`), Verilog plus a sorted `.f` filelist, or SystemC
+generated sources/headers and a static archive.  For `bluespec.verilog`, the
+filelist is the target's standard `targetfile()`; its default location is
+`build/Verilog/<target>.f`, with raw BSC output in
+`build/Verilog/<target>/*.v`.  Standard `set_targetdir`/`set_filename` settings
+are respected.  Dependency consumers use `target:dep("rtl"):targetfile()` and
+never need internal target data or knowledge of `.gens` paths.  Filelist entries
+are sorted absolute paths to this public RTL directory and relocate with the
+builddir.  Internal BSC state follows the compiler's flag terminology: `bdir`
+for `.bo`/`.ba`, `simdir` for Bluesim intermediates, and `info` for
+informational output.
 Package and backend dependfiles, graph cache, and Xmake's `.xmake` state are
 internal.  Graph entries are scoped to the configured build/autogen/output
 directories; source/import changes, include paths, flags, and the BSC identity
