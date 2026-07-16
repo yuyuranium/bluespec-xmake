@@ -22,6 +22,14 @@ local function assert_file(pattern, context)
     return files
 end
 
+local function assert_single_file(pattern, context)
+    local files = assert_file(pattern, context)
+    if #files ~= 1 then
+        raise("%s: expected one file matching %s, got %d", context, pattern, #files)
+    end
+    return files[1]
+end
+
 local function copy_case(root, workroot, name)
     local source = path.join(root, "tests", "cases", name)
     local destination = path.join(workroot, name)
@@ -224,6 +232,100 @@ local function test_backends(root, workroot, run)
     end
 end
 
+local function assert_bluespec_cache_hit(output, context)
+    for _, message in ipairs({"scanning Bluespec", "compiling Bluespec package", "building Bluespec"}) do
+        assert_not_contains(output, message, context)
+    end
+end
+
+local function test_native_bdpi_builddir(root, workroot, run)
+    local projectdir = copy_case(root, workroot, "native_bdpi")
+    configure(run, projectdir)
+
+    local initial = run(projectdir, {"build", "-v", "native_bdpi"}, {context = "native BDPI build"})
+    assert_contains(initial, "scanning Bluespec native_bdpi", "native BDPI build")
+    assert_contains(initial, "compiling Bluespec package NativeBDPI", "native BDPI build")
+    assert_contains(initial, "building Bluespec bluesim native_bdpi", "native BDPI build")
+    assert_contains(initial, "-Wl,--whole-archive", "native BDPI forced load")
+    assert_contains(initial, "-fPIC", "native BDPI PIC build")
+
+    local builddir = path.join(projectdir, "build")
+    local old_bo = assert_single_file(path.join(builddir, "**", "packages", "NativeBDPI.bo"),
+        "default builddir package")
+    local old_golden = assert_single_file(path.join(builddir, "**", "libgolden.a"),
+        "direct native archive")
+    local old_helper = assert_single_file(path.join(builddir, "**", "libgolden_helper.a"),
+        "transitive native archive")
+    local old_executable = path.join(builddir, "bin", "native_bdpi")
+    assert_file(old_executable, "default builddir Bluesim executable")
+    assert_file(old_executable .. ".so", "default builddir Bluesim model")
+    if old_golden == old_helper then
+        raise("native BDPI closure unexpectedly collapsed two archives into one path")
+    end
+
+    local run_output = run(projectdir, {"run", "native_bdpi"}, {context = "run native BDPI"})
+    assert_contains(run_output, "OK", "run native BDPI")
+    local cached = run(projectdir, {"build", "native_bdpi"}, {context = "cached native BDPI build"})
+    assert_bluespec_cache_hit(cached, "cached native BDPI build")
+
+    local golden_source = path.join(projectdir, "src", "native", "golden.c")
+    local golden_contents = io.readfile(golden_source)
+    if not golden_contents then
+        raise("native BDPI invalidation: could not read %s", golden_source)
+    end
+    os.sleep(1100)
+    io.writefile(golden_source, golden_contents .. "\n/* force native archive rebuild */\n")
+    local native_changed = run(projectdir, {"build", "native_bdpi"}, {context = "native BDPI invalidation"})
+    assert_not_contains(native_changed, "scanning Bluespec", "native BDPI invalidation")
+    assert_not_contains(native_changed, "compiling Bluespec package", "native BDPI invalidation")
+    assert_contains(native_changed, "building Bluespec bluesim native_bdpi", "native BDPI invalidation")
+    local changed_run = run(projectdir, {"run", "native_bdpi"}, {context = "run rebuilt native BDPI"})
+    assert_contains(changed_run, "OK", "run rebuilt native BDPI")
+
+    local old_bo_mtime = os.mtime(old_bo)
+    local old_model_mtime = os.mtime(old_executable .. ".so")
+    run(projectdir, {"config", "-c", "-o", "alt-build"}, {context = "configure alt builddir"})
+    local alt = run(projectdir, {"build", "-v", "native_bdpi"}, {context = "alt builddir"})
+    assert_contains(alt, "scanning Bluespec native_bdpi", "alt builddir")
+    assert_contains(alt, "compiling Bluespec package NativeBDPI", "alt builddir")
+    assert_contains(alt, "building Bluespec bluesim native_bdpi", "alt builddir")
+    assert_not_contains(alt, path.directory(old_bo), "alt builddir package command")
+
+    local alt_builddir = path.join(projectdir, "alt-build")
+    local alt_bo = assert_single_file(path.join(alt_builddir, "**", "packages", "NativeBDPI.bo"),
+        "alt builddir package")
+    assert_single_file(path.join(alt_builddir, "**", "libgolden.a"), "alt direct native archive")
+    assert_single_file(path.join(alt_builddir, "**", "libgolden_helper.a"), "alt transitive native archive")
+    assert_single_file(path.join(alt_builddir, "**", "bluesim", "model_mkNativeBDPI.cxx"),
+        "alt Bluesim generated source")
+    assert_single_file(path.join(alt_builddir, "**", "bluesim", "model_mkNativeBDPI.o"),
+        "alt Bluesim generated object")
+    local alt_executable = path.join(alt_builddir, "bin", "native_bdpi")
+    assert_file(alt_executable, "alt Bluesim executable")
+    assert_file(alt_executable .. ".so", "alt Bluesim model")
+    if os.mtime(old_bo) ~= old_bo_mtime or os.mtime(old_executable .. ".so") ~= old_model_mtime then
+        raise("alt builddir unexpectedly rewrote artifacts in the default builddir")
+    end
+    if path.normalize(path.directory(alt_bo)) == path.normalize(path.directory(old_bo)) then
+        raise("alt builddir reused the default package output directory")
+    end
+    local alt_run = run(projectdir, {"run", "native_bdpi"}, {context = "run alt native BDPI"})
+    assert_contains(alt_run, "OK", "run alt native BDPI")
+    local alt_cached = run(projectdir, {"build", "native_bdpi"}, {context = "cached alt builddir"})
+    assert_bluespec_cache_hit(alt_cached, "cached alt builddir")
+
+    run(projectdir, {"config", "-c", "-o", "build"}, {context = "restore default builddir"})
+    local restored = run(projectdir, {"build", "-v", "native_bdpi"}, {context = "restored builddir"})
+    assert_not_contains(restored, path.directory(alt_bo), "restored builddir package command")
+    assert_file(old_bo, "restored default package")
+    assert_file(old_executable, "restored default executable")
+    assert_file(old_executable .. ".so", "restored default model")
+    local restored_run = run(projectdir, {"run", "native_bdpi"}, {context = "run restored native BDPI"})
+    assert_contains(restored_run, "OK", "run restored native BDPI")
+    local restored_cached = run(projectdir, {"build", "native_bdpi"}, {context = "cached restored builddir"})
+    assert_bluespec_cache_hit(restored_cached, "cached restored builddir")
+end
+
 local function test_cycle(root)
     local parser = import("bluespec.parser")
     local projectdir = os.projectdir()
@@ -269,6 +371,7 @@ function main()
         {"generated BSV", function() test_generated(root, workroot, run) end},
         {"valued/valueless defines", function() test_defines(root, workroot, run) end},
         {"Bluesim/Verilog backends", function() test_backends(root, workroot, run) end},
+        {"native BDPI/builddir isolation", function() test_native_bdpi_builddir(root, workroot, run) end},
         {"cycle diagnostic", function() test_cycle(root) end},
         {"duplicate provider", function()
             test_failure(root, workroot, run, "duplicate_provider", "duplicate Bluespec package provider Dup")

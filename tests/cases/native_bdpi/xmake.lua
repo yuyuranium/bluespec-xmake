@@ -1,0 +1,21 @@
+set_project("native-bdpi")
+includes(path.join(os.getenv("BLUESPEC_XMAKE_ROOT"), "rules", "bluespec.lua"))
+
+target("golden_helper")
+    set_kind("static")
+    set_default(false)
+    add_files("src/native/golden_helper.c")
+
+target("golden")
+    set_kind("static")
+    set_default(false)
+    add_files("src/native/golden.c")
+    add_deps("golden_helper")
+
+target("native_bdpi")
+    set_kind("binary")
+    set_default(false)
+    add_rules("bluespec.bluesim")
+    set_bsc_root("src/NativeBDPI.bsv")
+    set_bsc_top("mkNativeBDPI")
+    add_deps("golden")

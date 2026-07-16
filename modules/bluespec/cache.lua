@@ -1,12 +1,26 @@
 local localcache = import("core.cache.localcache")
+local config = import("core.project.config")
 local tools = import("bluespec.tools")
 
 local memory = {}
 local cache_name = "bluespec-xmake"
 
+local function absolute(pathname)
+    return path.normalize(path.absolute(pathname))
+end
+
 local function target_key(target)
-    return path.absolute(os.projectdir()) .. "|" .. target:fullname() .. "|" .. tostring(target:plat()) .. "|" ..
-        tostring(target:arch()) .. "|" .. tostring(target:get("mode") or "")
+    return table.concat({
+        "schema=3",
+        "project=" .. absolute(os.projectdir()),
+        "target=" .. target:fullname(),
+        "plat=" .. tostring(target:plat()),
+        "arch=" .. tostring(target:arch()),
+        "mode=" .. tostring(target:get("mode") or config.mode() or ""),
+        "builddir=" .. absolute(config.builddir({absolute = true})),
+        "autogendir=" .. absolute(target:autogendir()),
+        "targetdir=" .. absolute(target:targetdir()),
+    }, "|")
 end
 
 local function stat(pathname)
@@ -44,7 +58,7 @@ end
 
 function fingerprint(target, inputs, config)
     local parts = {
-        "schema=2",
+        "schema=3",
         "target=" .. target_key(target),
         "bsc=" .. tools.identity(),
     }

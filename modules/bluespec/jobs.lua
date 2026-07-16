@@ -1,6 +1,7 @@
 local util = import("bluespec.util")
 local tools = import("bluespec.tools")
 local graphmod = import("bluespec.graph")
+local native = import("bluespec.native")
 local compiler = import("core.tool.compiler")
 local linker = import("core.tool.linker")
 local depend = import("core.project.depend")
@@ -124,44 +125,6 @@ local function schedule_packages(target, jobgraph, graph, backend)
     return jobs
 end
 
-local function native_link_args(target)
-    local args = {}
-    local seen = {}
-    for _, dep in ipairs(target:orderdeps()) do
-        local marker = dep:data("bluespec.rule")
-        if not marker then
-            local targetfile = dep:targetfile()
-            if targetfile and targetfile ~= "" and not seen[targetfile] then
-                targetfile = path.absolute(targetfile)
-                table.insert(args, {"-Xl", targetfile})
-                seen[targetfile] = true
-            end
-            for _, linkdir in ipairs(util.list(dep:get("linkdirs"))) do
-                table.insert(args, {"-L", linkdir})
-            end
-            for _, link in ipairs(util.list(dep:get("links"))) do
-                table.insert(args, {"-l", link})
-            end
-            for _, syslink in ipairs(util.list(dep:get("syslinks"))) do
-                table.insert(args, {"-Xl", "-l" .. syslink})
-            end
-        end
-    end
-    return args
-end
-
-local function native_include_dirs(target)
-    local dirs = {}
-    for _, dep in ipairs(target:orderdeps()) do
-        if not dep:data("bluespec.rule") then
-            for _, directory in ipairs(util.list(dep:get("includedirs"))) do
-                table.insert(dirs, directory)
-            end
-        end
-    end
-    return util.unique_sorted(dirs)
-end
-
 local function append_pairs(args, pairs)
     for _, pair in ipairs(pairs or {}) do
         for _, value in ipairs(pair) do
@@ -198,7 +161,7 @@ local function backend_args(target, graph, backend, phase)
         table.insert(args, assert(graph.top, "Bluespec backend requires a top module"))
         table.insert(args, "-o")
         table.insert(args, path.absolute(target:targetfile()))
-        append_pairs(args, native_link_args(target))
+        append_pairs(args, native.link_args(target))
         for _, option in ipairs(graph.effective_link_options or {}) do
             table.insert(args, "-Xl")
             table.insert(args, option)
@@ -253,7 +216,7 @@ local function build_systemc(target, graph)
         table.insert(args, "-Xc++")
         table.insert(args, "-I" .. includedir)
     end
-    for _, includedir in ipairs(native_include_dirs(target)) do
+    for _, includedir in ipairs(native.include_dirs(target)) do
         table.insert(args, "-Xc++")
         table.insert(args, "-I" .. includedir)
     end
@@ -292,7 +255,7 @@ local function build_systemc(target, graph)
         for _, directory in ipairs(target:get("includedirs") or {}) do
             table.insert(includedirs, directory)
         end
-        for _, directory in ipairs(native_include_dirs(target)) do
+        for _, directory in ipairs(native.include_dirs(target)) do
             table.insert(includedirs, directory)
         end
         local configs = {includedirs = includedirs}
@@ -349,13 +312,8 @@ local function backend_inputs(target, graph)
     -- Native BDPI/static dependencies are ordinary Xmake targets.  Their
     -- archives must participate in the backend dependfile just like `.bo`
     -- providers do.
-    for _, dep in ipairs(target:orderdeps()) do
-        if not dep:data("bluespec.rule") then
-            local targetfile = dep:targetfile()
-            if targetfile and targetfile ~= "" then
-                table.insert(files, path.absolute(targetfile))
-            end
-        end
+    for _, targetfile in ipairs(native.targetfiles(target)) do
+        table.insert(files, targetfile)
     end
     return util.unique_sorted(files)
 end
@@ -403,6 +361,7 @@ local function backend_depend(target, graph, backend, callback)
         table.concat(util.list(target:get("links")), "\n"),
         table.concat(util.list(target:get("linkdirs")), "\n"),
         table.concat(util.list(target:get("syslinks")), "\n"),
+        native.link_identity(target),
     }
     depend.on_changed(callback, {
         dependfile = target:dependfile(marker),

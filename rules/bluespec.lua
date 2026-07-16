@@ -88,6 +88,12 @@ local function define_rule(name, backend, default_kind, needs_top)
             end
         end)
 
+        after_load(function(target)
+            if backend == "bluesim" then
+                import("bluespec.native").configure_bluesim(target)
+            end
+        end)
+
         -- File-level prepare hooks are the same phase Xmake's C++ module
         -- scanner uses: generated/source files are ready before the package
         -- graph is consumed by build jobs.

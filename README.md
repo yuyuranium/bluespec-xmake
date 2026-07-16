@@ -61,7 +61,8 @@ Visibility follows dependency-to-consumer propagation: private values affect
 the declaring target, while public/interface package directories, defines,
 options, and link options are exported to consumers.
 Native C/C++ targets can be attached with ordinary `add_deps()`; Bluesim link
-jobs consume their target files for BDPI/static dependencies, and SystemC
+jobs force-load direct and transitive static dependencies into the shared model
+and build those archives as PIC where the platform requires it.  SystemC
 targets publish generated includes plus the `systemc` link requirement.
 Generated BSV inputs must be emitted during Xmake's prepare phase (for example,
 by an `on_prepare` generator target); ordinary `on_build` generation happens
@@ -73,5 +74,6 @@ Only build artifacts are exposed: `.bo`, Bluesim output (the executable defaults
 to `build/bin/<target>`), Verilog plus a sorted
 `.f` filelist, or SystemC generated sources/headers and a static archive.
 Package and backend dependfiles, graph cache, and Xmake's `.xmake` state are
-internal.  Source/import changes, include paths, flags, and the BSC identity
+internal.  Graph entries are scoped to the configured build/autogen/output
+directories; source/import changes, include paths, flags, and the BSC identity
 invalidate the relevant scan or package/backend job.
