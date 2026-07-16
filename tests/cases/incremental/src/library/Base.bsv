@@ -1,9 +1,10 @@
 package Base;
 
 import Leaf::*;
+import Other::*;
 
 function Integer baseValue();
-    return leafValue();
+    return leafValue() + otherValue();
 endfunction
 
 endpackage

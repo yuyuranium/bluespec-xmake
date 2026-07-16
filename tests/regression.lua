@@ -14,6 +14,12 @@ local function assert_not_contains(text, unexpected, context)
     end
 end
 
+local function assert_bluespec_cache_hit(output, context)
+    for _, message in ipairs({"scanning Bluespec", "compiling Bluespec package", "building Bluespec"}) do
+        assert_not_contains(output, message, context)
+    end
+end
+
 local function assert_file(pattern, context)
     local files = os.files(pattern)
     if #files == 0 then
@@ -86,6 +92,8 @@ local function test_incremental(root, workroot, run)
 
     local first = run(projectdir, {"build", "consumer"}, {context = "initial package build"})
     assert_contains(first, "scanning Bluespec library", "initial package build")
+    assert_contains(first, "compiling Bluespec package Leaf", "initial package build")
+    assert_contains(first, "compiling Bluespec package Other", "initial package build")
     assert_contains(first, "compiling Bluespec package Base", "initial package build")
     assert_contains(first, "compiling Bluespec package Consumer", "initial package build")
     local root_outputs = assert_file(path.join(projectdir, "build", "**", "packages", "Base.bo"),
@@ -95,11 +103,22 @@ local function test_incremental(root, workroot, run)
     end
     assert_file(path.join(projectdir, "build", "**", "packages", "Consumer.bo"),
         "consumer package artifact")
+    local old_leaf_bo = assert_single_file(path.join(projectdir, "build", "**", "packages", "Leaf.bo"),
+        "leaf package artifact")
+    local old_other_bo = assert_single_file(path.join(projectdir, "build", "**", "packages", "Other.bo"),
+        "unrelated package artifact")
+
+    local initial_rtl = run(projectdir, {"build", "rtl"}, {context = "initial incremental backend"})
+    assert_contains(initial_rtl, "scanning Bluespec rtl", "initial incremental backend")
+    assert_contains(initial_rtl, "compiling Bluespec package Top", "initial incremental backend")
+    assert_contains(initial_rtl, "building Bluespec verilog rtl", "initial incremental backend")
 
     local cached = run(projectdir, {"build", "consumer"}, {context = "cache-hit build"})
     for _, message in ipairs({"scanning Bluespec", "compiling Bluespec package", "building Bluespec"}) do
         assert_not_contains(cached, message, "cache-hit build")
     end
+    local cached_rtl = run(projectdir, {"build", "rtl"}, {context = "cache-hit incremental backend"})
+    assert_bluespec_cache_hit(cached_rtl, "cache-hit incremental backend")
 
     local leaf = path.join(projectdir, "src", "library", "Leaf.bsv")
     os.sleep(1100)
@@ -111,11 +130,20 @@ endfunction
 
 endpackage
 ]])
-    local changed = run(projectdir, {"build", "consumer"}, {context = "source invalidation"})
+    local changed = run(projectdir, {"build", "rtl"}, {context = "source invalidation"})
     assert_contains(changed, "scanning Bluespec library", "source invalidation")
     assert_contains(changed, "compiling Bluespec package Leaf", "source invalidation")
     assert_contains(changed, "compiling Bluespec package Base", "source invalidation")
-    assert_contains(changed, "compiling Bluespec package Consumer", "source invalidation")
+    assert_contains(changed, "compiling Bluespec package Top", "source invalidation")
+    assert_contains(changed, "building Bluespec verilog rtl", "source invalidation")
+    assert_not_contains(changed, "compiling Bluespec package Other", "source invalidation")
+
+    local consumer_changed = run(projectdir, {"build", "consumer"}, {context = "provider invalidation"})
+    assert_contains(consumer_changed, "scanning Bluespec consumer", "provider invalidation")
+    assert_contains(consumer_changed, "compiling Bluespec package Consumer", "provider invalidation")
+    assert_not_contains(consumer_changed, "compiling Bluespec package Leaf", "provider invalidation")
+    assert_not_contains(consumer_changed, "compiling Bluespec package Base", "provider invalidation")
+    assert_not_contains(consumer_changed, "compiling Bluespec package Other", "provider invalidation")
 
     local base = path.join(projectdir, "src", "library", "Base.bsv")
     os.sleep(1100)
@@ -133,8 +161,14 @@ endpackage
     assert_contains(import_changed, "scanning Bluespec library", "dynamic import invalidation")
     assert_contains(import_changed, "compiling Bluespec package Added", "dynamic import invalidation")
     assert_contains(import_changed, "compiling Bluespec package Base", "dynamic import invalidation")
+    assert_contains(import_changed, "compiling Bluespec package Consumer", "dynamic import invalidation")
+    assert_not_contains(import_changed, "compiling Bluespec package Leaf", "dynamic import invalidation")
+    assert_not_contains(import_changed, "compiling Bluespec package Other", "dynamic import invalidation")
     assert_file(path.join(projectdir, "build", "**", "packages", "Added.bo"),
         "dynamic import package artifact")
+    if os.isfile(old_leaf_bo) or os.isfile(old_other_bo) then
+        raise("removed packages left stale .bo artifacts after the import graph changed")
+    end
 
     local cached_again = run(projectdir, {"build", "consumer"}, {context = "post-invalidation cache hit"})
     assert_not_contains(cached_again, "scanning Bluespec", "post-invalidation cache hit")
@@ -150,6 +184,56 @@ local function test_generated(root, workroot, run)
     assert_contains(output, "compiling Bluespec package Generated", "generated BSV build")
     assert_file(path.join(projectdir, "build", "**", "packages", "Generated.bo"),
         "generated BSV artifact")
+
+    local cached = run(projectdir, {"build", "generated"}, {context = "generated BSV cache hit"})
+    assert_not_contains(cached, "generating Generated.bsv", "generated BSV cache hit")
+    assert_bluespec_cache_hit(cached, "generated BSV cache hit")
+
+    local spec = path.join(projectdir, "src", "generator", "spec.txt")
+    os.sleep(1100)
+    io.writefile(spec, "import\n")
+    local import_added = run(projectdir, {"build", "generated"}, {context = "generated import addition"})
+    assert_contains(import_added, "generating Generated.bsv", "generated import addition")
+    assert_contains(import_added, "scanning Bluespec generated", "generated import addition")
+    assert_contains(import_added, "compiling Bluespec package Extra", "generated import addition")
+    assert_contains(import_added, "compiling Bluespec package Generated", "generated import addition")
+    local extra_bo = assert_single_file(path.join(projectdir, "build", "**", "packages", "Extra.bo"),
+        "generated dependency artifact")
+
+    local import_cached = run(projectdir, {"build", "generated"}, {context = "generated import cache hit"})
+    assert_not_contains(import_cached, "generating Generated.bsv", "generated import cache hit")
+    assert_bluespec_cache_hit(import_cached, "generated import cache hit")
+
+    local projectfile = path.join(projectdir, "xmake.lua")
+    local project_contents = io.readfile(projectfile) or ""
+    local changed, replacements = project_contents:gsub(
+        'set_values%("generated%.mode", "base"%)', 'set_values("generated.mode", "offset")')
+    if replacements ~= 1 then
+        raise("generated config invalidation: expected one mode setting, got %d", replacements)
+    end
+    os.sleep(1100)
+    io.writefile(projectfile, changed)
+    run(projectdir, {"config", "-c"}, {context = "reload generated config"})
+    local config_changed = run(projectdir, {"build", "generated"}, {context = "generated config invalidation"})
+    assert_contains(config_changed, "generating Generated.bsv", "generated config invalidation")
+    assert_contains(config_changed, "scanning Bluespec generated", "generated config invalidation")
+    assert_contains(config_changed, "compiling Bluespec package Generated", "generated config invalidation")
+    assert_not_contains(config_changed, "compiling Bluespec package Extra", "generated config invalidation")
+
+    os.sleep(1100)
+    io.writefile(spec, "plain\n")
+    local import_removed = run(projectdir, {"build", "generated"}, {context = "generated import removal"})
+    assert_contains(import_removed, "generating Generated.bsv", "generated import removal")
+    assert_contains(import_removed, "scanning Bluespec generated", "generated import removal")
+    assert_contains(import_removed, "compiling Bluespec package Generated", "generated import removal")
+    assert_not_contains(import_removed, "compiling Bluespec package Extra", "generated import removal")
+    if os.isfile(extra_bo) then
+        raise("generated import removal left stale Extra.bo")
+    end
+
+    local final_cached = run(projectdir, {"build", "generated"}, {context = "generated final cache hit"})
+    assert_not_contains(final_cached, "generating Generated.bsv", "generated final cache hit")
+    assert_bluespec_cache_hit(final_cached, "generated final cache hit")
 end
 
 local function test_defines(root, workroot, run)
@@ -229,12 +313,6 @@ local function test_backends(root, workroot, run)
     table.sort(sorted)
     if table.concat(lines, "\n") ~= table.concat(sorted, "\n") then
         raise("Verilog filelist is not deterministically sorted: %s", filelists[1])
-    end
-end
-
-local function assert_bluespec_cache_hit(output, context)
-    for _, message in ipairs({"scanning Bluespec", "compiling Bluespec package", "building Bluespec"}) do
-        assert_not_contains(output, message, context)
     end
 end
 

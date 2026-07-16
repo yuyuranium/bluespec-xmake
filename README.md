@@ -66,7 +66,15 @@ and build those archives as PIC where the platform requires it.  SystemC
 targets publish generated includes plus the `systemc` link requirement.
 Generated BSV inputs must be emitted during Xmake's prepare phase (for example,
 by an `on_prepare` generator target); ordinary `on_build` generation happens
-after dependency scanning.
+after dependency scanning.  The generator should use
+`core.project.depend.on_changed` with both its input files and configuration
+values, and should only rewrite its output when those inputs change.  This lets
+the scanner update import edges in the same invocation while keeping unchanged
+builds quiet.  `tests/cases/generated` is a complete example.
+
+Each package compile is an ordinary Xmake job and follows Xmake's global `-j`
+setting.  On memory-constrained machines, select a lower job count with
+`xmake -j <jobs>`; there is currently no separate BSC job-pool setting.
 
 ## Artifacts and incremental state
 
@@ -77,3 +85,7 @@ Package and backend dependfiles, graph cache, and Xmake's `.xmake` state are
 internal.  Graph entries are scoped to the configured build/autogen/output
 directories; source/import changes, include paths, flags, and the BSC identity
 invalidate the relevant scan or package/backend job.
+
+Xmake can only clean targets present in the currently loaded project.  Run
+`xmake clean -a` before deleting a target definition, or remove the configured
+build directory afterward if obsolete target state must be reclaimed.

@@ -192,8 +192,8 @@ local function config_items(target, config, old)
     append(inputs, config.own_dirs)
     if old then
         for _, package in pairs(old.packages or {}) do
-            if package.source then
-                table.insert(inputs, package.source)
+            for source in pairs(package.sources or {}) do
+                table.insert(inputs, source)
             end
             for input in pairs(package.inputs or {}) do
                 table.insert(inputs, input)
@@ -307,8 +307,8 @@ local function finalize(target, parsed, config, deps)
 
     local source_inputs = {}
     for _, package in pairs(packages) do
-        if package.source then
-            table.insert(source_inputs, package.source)
+        for source in pairs(package.sources or {}) do
+            table.insert(source_inputs, source)
         end
         for input in pairs(package.inputs or {}) do
             table.insert(source_inputs, input)
@@ -354,6 +354,22 @@ local function finalize(target, parsed, config, deps)
     }
 end
 
+local function cleanup_removed_packages(target, old, graph)
+    if not old or not old.output_dir or path.normalize(old.output_dir) ~= path.normalize(graph.output_dir) then
+        return
+    end
+    for name, package in pairs(old.packages or {}) do
+        if old.owned and old.owned[name] and package.bo then
+            local current = graph.packages and graph.packages[name]
+            local current_bo = current and current.bo
+            if current_bo ~= package.bo and is_under(package.bo, {old.output_dir}) then
+                os.rm(package.bo)
+                os.rm(target:dependfile(package.bo))
+            end
+        end
+    end
+end
+
 function get(target)
     local graph = data(target, "bluespec.graph")
     return graph or cache.get(target)
@@ -376,6 +392,7 @@ function prepare(target, opt)
         config.effective_defines, config.effective_options)
     local parsed = parser.parse(raw, util.canonical_root(target))
     local graph = finalize(target, parsed, config, deps)
+    cleanup_removed_packages(target, old, graph)
     cache.set(target, graph)
     return graph
 end

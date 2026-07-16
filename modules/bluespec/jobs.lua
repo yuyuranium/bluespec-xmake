@@ -27,6 +27,68 @@ local function package_names(graph)
     return result
 end
 
+local function dictionary_keys(values)
+    local result = {}
+    for key in pairs(values or {}) do
+        table.insert(result, key)
+    end
+    table.sort(result)
+    return result
+end
+
+local function add_value(values, name, value)
+    table.insert(values, name .. "=" .. tostring(value or ""))
+end
+
+-- Keep package invalidation at the same granularity as the BSC invocation.
+-- File mtimes are tracked separately by depend.on_changed(); these values
+-- describe everything structural that selects the source/provider closure or
+-- changes the exact compile command.
+local function package_depend_values(graph, name, package, program, args)
+    local values = {"bluespec-package-depend-v2"}
+    add_value(values, "target", graph.target)
+    add_value(values, "package", name)
+    add_value(values, "owner", package.target)
+    add_value(values, "source", package.source)
+    add_value(values, "output", package.bo)
+    add_value(values, "toolchain", tools.identity())
+    add_value(values, "program", program)
+    for index, argument in ipairs(args or {}) do
+        add_value(values, string.format("argv[%d]", index), argument)
+    end
+    for _, source in ipairs(dictionary_keys(package.sources)) do
+        add_value(values, "declared-source", source)
+    end
+    for _, input in ipairs(dictionary_keys(package.inputs)) do
+        add_value(values, "scanner-input", input)
+    end
+    for _, depname in ipairs(dictionary_keys(package.deps)) do
+        local dep_package = graph.packages and graph.packages[depname]
+        local provider = graph.providers and graph.providers[depname]
+        add_value(values, "dependency", depname)
+        add_value(values, "dependency-scan-path", package.dep_paths and package.dep_paths[depname])
+        if provider and provider.bo then
+            add_value(values, "dependency-kind", "provider")
+            add_value(values, "dependency-target", provider.target)
+            add_value(values, "dependency-target-name", provider.target_name)
+            add_value(values, "dependency-output-dir", provider.output_dir)
+            add_value(values, "dependency-bo", provider.bo)
+            add_value(values, "dependency-source", provider.source)
+        elseif dep_package and dep_package.bo then
+            add_value(values, "dependency-kind", "owned")
+            add_value(values, "dependency-target", dep_package.target)
+            add_value(values, "dependency-bo", dep_package.bo)
+            add_value(values, "dependency-source", dep_package.source)
+        elseif graph.builtin and graph.builtin[depname] then
+            add_value(values, "dependency-kind", "builtin")
+        else
+            add_value(values, "dependency-kind", "source-only")
+            add_value(values, "dependency-source", dep_package and dep_package.source)
+        end
+    end
+    return values
+end
+
 local function provider_job(jobgraph, provider, package_name)
     if not provider or not provider.target then
         return nil
@@ -65,7 +127,10 @@ local function schedule_packages(target, jobgraph, graph, backend)
             jobs[name] = job
             if not jobgraph:has(job) then
                 jobgraph:add(job, function(index, total, opt)
-                    local inputs = {package.source}
+                    local inputs = {}
+                    for source in pairs(package.sources or {}) do
+                        table.insert(inputs, source)
+                    end
                     for input in pairs(package.inputs or {}) do
                         table.insert(inputs, input)
                     end
@@ -79,19 +144,13 @@ local function schedule_packages(target, jobgraph, graph, backend)
                         end
                     end
                     inputs = util.unique_sorted(inputs)
-                    local values = {
-                        name,
-                        graph.fingerprint,
-                        tools.identity(),
-                        table.concat(graph.effective_defines or {}, "\n"),
-                        table.concat(graph.effective_options or {}, "\n"),
-                    }
+                    local program, args = tools.package_args(target, graph, package, nil)
+                    local values = package_depend_values(graph, name, package, program, args)
                     depend.on_changed(function()
                         if opt and opt.progress then
                             progress.show(opt.progress, "compiling Bluespec package %s", name)
                         end
                         os.mkdir(graph.output_dir)
-                        local program, args = tools.package_args(target, graph, package, nil)
                         tools.run_bsc(target, args)
                         return {}
                     end, {
