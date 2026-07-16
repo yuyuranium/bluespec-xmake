@@ -36,6 +36,14 @@
 *.x86_64
 *.hex
 
+# Xmake and Bluespec build state
+.xmake/
+build/
+.direnv/
+*.bo
+*.ba
+*.vcd
+
 # Debug files
 *.dSYM/
 *.su

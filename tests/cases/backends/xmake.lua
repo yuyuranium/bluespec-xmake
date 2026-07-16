@@ -1,0 +1,21 @@
+set_project("backends")
+includes(path.join(os.getenv("BLUESPEC_XMAKE_ROOT"), "rules", "bluespec.lua"))
+
+target("native")
+    set_kind("static")
+    add_files("src/native/bridge.cpp")
+
+target("sim")
+    set_kind("binary")
+    set_default(false)
+    add_rules("bluespec.bluesim")
+    set_bsc_root("src/Top.bsv")
+    set_bsc_top("mkTop")
+    add_deps("native")
+
+target("rtl")
+    set_kind("phony")
+    set_default(false)
+    add_rules("bluespec.verilog")
+    set_bsc_root("src/Top.bsv")
+    set_bsc_top("mkTop")

@@ -1,0 +1,15 @@
+set_project("unexported-package")
+includes(path.join(os.getenv("BLUESPEC_XMAKE_ROOT"), "rules", "bluespec.lua"))
+
+target("library")
+    set_kind("phony")
+    add_rules("bluespec.library")
+    set_bsc_root("src/library/Public.bsv")
+    add_bsc_package_dirs("src/library", {public = true})
+
+target("consumer")
+    set_kind("phony")
+    add_rules("bluespec.check")
+    set_bsc_root("src/consumer/Consumer.bsv")
+    add_bsc_package_dirs("src/library")
+    add_deps("library")
