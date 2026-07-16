@@ -9,9 +9,10 @@ nix-shell --run 'xmake regression'
 The runner is implemented in Xmake Lua and uses isolated copies below
 `build/regression`.  It covers cache hits, source and dynamic-import
 invalidation, dependency `.bo` reuse, generated BSV in the same invocation,
-Bluesim execution/output placement, native static dependencies, deterministic
-Verilog filelists, cycles, duplicate providers, and unexported packages.  It
-does not require a shell/Python test script or produce a public manifest.
+valued/valueless defines and define invalidation/propagation, Bluesim
+execution/output placement, native static dependencies, deterministic Verilog
+filelists, cycles, duplicate providers, and unexported packages.  It does not
+require a shell/Python test script or produce a public manifest.
 
 Generated BSV that feeds dependency scanning must be produced by a generator
 target's prepare hook.  A normal `on_build` hook is too late because Xmake

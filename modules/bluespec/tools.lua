@@ -108,7 +108,8 @@ function run_depend(root, package_dirs, defines, options)
     }
     local flags = {}
     for _, define in ipairs(util.list(defines)) do
-        table.insert(flags, "-D" .. tostring(define))
+        table.insert(flags, "-D")
+        table.insert(flags, tostring(define))
     end
     for _, option in ipairs(util.list(options)) do
         if tostring(option) ~= "" then
@@ -158,7 +159,8 @@ function package_args(target, graph, package, backend)
     table.insert(args, "-p")
     table.insert(args, util.concat_path_list(dirs))
     for _, define in ipairs(graph.effective_defines or {}) do
-        table.insert(args, "-D" .. tostring(define))
+        table.insert(args, "-D")
+        table.insert(args, tostring(define))
     end
     for _, option in ipairs(graph.effective_options or {}) do
         table.insert(args, tostring(option))

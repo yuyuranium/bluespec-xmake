@@ -1,0 +1,18 @@
+set_project("defines")
+includes(path.join(os.getenv("BLUESPEC_XMAKE_ROOT"), "rules", "bluespec.lua"))
+
+target("define-lib")
+    set_kind("phony")
+    add_rules("bluespec.library")
+    set_bsc_root("src/library/DefineLib.bsv")
+    add_bsc_package_dirs("src/library", {public = true})
+    add_bsc_defines("DEPTH=128", {public = true})
+    add_bsc_defines("USE_FAST", {interface = true})
+
+target("define-repro")
+    set_kind("phony")
+    set_default(false)
+    add_rules("bluespec.verilog")
+    set_bsc_root("src/consumer/DefineRepro.bsv")
+    set_bsc_top("mkDefineRepro")
+    add_deps("define-lib")

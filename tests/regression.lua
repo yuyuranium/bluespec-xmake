@@ -144,6 +144,47 @@ local function test_generated(root, workroot, run)
         "generated BSV artifact")
 end
 
+local function test_defines(root, workroot, run)
+    local projectdir = copy_case(root, workroot, "defines")
+    configure(run, projectdir)
+
+    local first = run(projectdir, {"build", "define-repro"}, {context = "initial define build"})
+    assert_contains(first, "scanning Bluespec define-lib", "initial define build")
+    assert_contains(first, "scanning Bluespec define-repro", "initial define build")
+    assert_contains(first, "compiling Bluespec package DefineLib", "initial define build")
+    assert_contains(first, "compiling Bluespec package DefineRepro", "initial define build")
+    assert_contains(first, "building Bluespec verilog define-repro", "initial define build")
+
+    local cached = run(projectdir, {"build", "define-repro"}, {context = "cached define build"})
+    for _, message in ipairs({"scanning Bluespec", "compiling Bluespec package", "building Bluespec"}) do
+        assert_not_contains(cached, message, "cached define build")
+    end
+
+    local projectfile = path.join(projectdir, "xmake.lua")
+    local contents = io.readfile(projectfile)
+    if not contents then
+        raise("define invalidation: could not read %s", projectfile)
+    end
+    local changed, replacements = contents:gsub("DEPTH=128", "DEPTH=256")
+    if replacements ~= 1 then
+        raise("define invalidation: expected one DEPTH=128 occurrence, got %d", replacements)
+    end
+    os.sleep(1100)
+    io.writefile(projectfile, changed)
+
+    local rebuilt = run(projectdir, {"build", "define-repro"}, {context = "define invalidation"})
+    assert_contains(rebuilt, "scanning Bluespec define-lib", "define invalidation")
+    assert_contains(rebuilt, "scanning Bluespec define-repro", "define invalidation")
+    assert_contains(rebuilt, "compiling Bluespec package DefineLib", "define invalidation")
+    assert_contains(rebuilt, "compiling Bluespec package DefineRepro", "define invalidation")
+    assert_contains(rebuilt, "building Bluespec verilog define-repro", "define invalidation")
+
+    local cached_again = run(projectdir, {"build", "define-repro"}, {context = "changed define cache hit"})
+    for _, message in ipairs({"scanning Bluespec", "compiling Bluespec package", "building Bluespec"}) do
+        assert_not_contains(cached_again, message, "changed define cache hit")
+    end
+end
+
 local function test_backends(root, workroot, run)
     local projectdir = copy_case(root, workroot, "backends")
     configure(run, projectdir)
@@ -226,6 +267,7 @@ function main()
     local tests = {
         {"incremental graph/cache", function() test_incremental(root, workroot, run) end},
         {"generated BSV", function() test_generated(root, workroot, run) end},
+        {"valued/valueless defines", function() test_defines(root, workroot, run) end},
         {"Bluesim/Verilog backends", function() test_backends(root, workroot, run) end},
         {"cycle diagnostic", function() test_cycle(root) end},
         {"duplicate provider", function()
