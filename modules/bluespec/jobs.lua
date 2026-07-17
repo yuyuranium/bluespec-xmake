@@ -45,7 +45,7 @@ end
 -- describe everything structural that selects the source/provider closure or
 -- changes the exact compile command.
 local function package_depend_values(graph, name, package, program, args)
-    local values = {"bluespec-package-depend-v2"}
+    local values = {"bluespec-package-depend-v3"}
     add_value(values, "target", graph.target)
     add_value(values, "package", name)
     add_value(values, "owner", package.target)
@@ -66,8 +66,12 @@ local function package_depend_values(graph, name, package, program, args)
         local dep_package = graph.packages and graph.packages[depname]
         local provider = graph.providers and graph.providers[depname]
         add_value(values, "dependency", depname)
-        add_value(values, "dependency-scan-path", package.dep_paths and package.dep_paths[depname])
         if provider and provider.bo then
+            -- Bluetcl may report the exported source-side pseudo .bo during a
+            -- clean scan and the compiled provider .bo on later scans.  Both
+            -- describe the same edge; canonicalize it to the artifact that
+            -- the package compile job actually consumes.
+            add_value(values, "dependency-scan-path", provider.bo)
             add_value(values, "dependency-kind", "provider")
             add_value(values, "dependency-target", provider.target)
             add_value(values, "dependency-target-name", provider.target_name)
@@ -75,13 +79,16 @@ local function package_depend_values(graph, name, package, program, args)
             add_value(values, "dependency-bo", provider.bo)
             add_value(values, "dependency-source", provider.source)
         elseif dep_package and dep_package.bo then
+            add_value(values, "dependency-scan-path", package.dep_paths and package.dep_paths[depname])
             add_value(values, "dependency-kind", "owned")
             add_value(values, "dependency-target", dep_package.target)
             add_value(values, "dependency-bo", dep_package.bo)
             add_value(values, "dependency-source", dep_package.source)
         elseif graph.builtin and graph.builtin[depname] then
+            add_value(values, "dependency-scan-path", package.dep_paths and package.dep_paths[depname])
             add_value(values, "dependency-kind", "builtin")
         else
+            add_value(values, "dependency-scan-path", package.dep_paths and package.dep_paths[depname])
             add_value(values, "dependency-kind", "source-only")
             add_value(values, "dependency-source", dep_package and dep_package.source)
         end

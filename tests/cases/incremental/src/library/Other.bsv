@@ -1,7 +1,9 @@
 package Other;
 
+import Support::*;
+
 function Integer otherValue();
-    return 10;
+    return supportValue();
 endfunction
 
 endpackage

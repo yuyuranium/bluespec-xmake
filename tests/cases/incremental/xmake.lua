@@ -1,11 +1,18 @@
 set_project("incremental")
 includes(path.join(os.getenv("BLUESPEC_XMAKE_ROOT"), "rules", "bluespec.lua"))
 
+target("support")
+    set_kind("phony")
+    add_rules("bluespec.library")
+    set_bsc_root("src/support/Support.bsv")
+    add_bsc_package_dirs("src/support", {public = true})
+
 target("library")
     set_kind("phony")
     add_rules("bluespec.library")
     set_bsc_root("src/library/Base.bsv")
     add_bsc_package_dirs("src/library", {public = true})
+    add_deps("support")
 
 target("consumer")
     set_kind("phony")

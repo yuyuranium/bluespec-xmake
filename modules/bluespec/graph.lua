@@ -80,14 +80,12 @@ local function effective_config(target, deps)
     append(exported_link_options, own_link_options.interface)
     local dep_contexts = {}
     local dependency_exported_dirs = {}
+    local scanner_dirs = {}
     for _, item in ipairs(deps) do
         local graph = item.graph
-        -- Consumers use the dependency's compiled package output.  Do not
-        -- put a dependency's source package directory on the scanner path:
-        -- doing so would make Bluetcl select a second source provider instead
-        -- of the dependency .bo and would hide duplicate/unexported-package
-        -- diagnostics.  Exported source directories are retained separately
-        -- for those diagnostics and for propagation metadata.
+        -- Consumers compile against the dependency's package output.  Source
+        -- exports are added separately to the scanner path below so a clean
+        -- scan can discover provider imports before those outputs exist.
         local provider_dirs = {}
         local exports_any = false
         for _, exported in pairs(graph.exports or {}) do
@@ -105,6 +103,13 @@ local function effective_config(target, deps)
             end
         end
         append(effective_dirs, provider_dirs)
+        -- The compile path must only expose dependency .bo outputs, but a
+        -- clean dependency output directory is empty while prepare scans are
+        -- running.  Let Bluetcl inspect exported provider sources during the
+        -- scan so cross-target import edges are complete on the first build.
+        -- finalize() still resolves those names through provider_index(), and
+        -- package compilation continues to consume only provider .bo files.
+        append(scanner_dirs, graph.exported_dirs)
         append(dependency_exported_dirs, graph.exported_dirs)
         append(effective_defines, graph.exported_defines)
         append(effective_options, graph.exported_options)
@@ -115,10 +120,12 @@ local function effective_config(target, deps)
         append(exported_link_options, graph.exported_link_options)
         table.insert(dep_contexts, item.target:fullname() .. "=" .. tostring(graph.fingerprint))
     end
+    append(scanner_dirs, effective_dirs)
     return {
         dirs = dirs,
         own_dirs = util.unique_sorted(dirs.all),
         search_dirs = util.unique_sorted(effective_dirs),
+        scanner_dirs = util.unique_sorted(scanner_dirs),
         effective_defines = util.unique_sorted(effective_defines),
         effective_options = util.unique_sorted(effective_options),
         effective_link_options = util.unique_sorted(effective_link_options),
@@ -204,6 +211,7 @@ local function config_items(target, config, old)
         util.canonical_root(target),
         util.top(target, false) or "",
         table.concat(config.search_dirs, "\n"),
+        table.concat(config.scanner_dirs, "\n"),
         table.concat(config.exported_dirs, "\n"),
         table.concat(config.effective_defines, "\n"),
         table.concat(config.effective_options, "\n"),
@@ -320,6 +328,7 @@ local function finalize(target, parsed, config, deps)
         util.canonical_root(target),
         util.top(target, false) or "",
         table.concat(config.search_dirs, "\n"),
+        table.concat(config.scanner_dirs, "\n"),
         table.concat(config.exported_dirs, "\n"),
         table.concat(config.effective_defines, "\n"),
         table.concat(config.effective_options, "\n"),
@@ -328,7 +337,7 @@ local function finalize(target, parsed, config, deps)
     })
 
     return {
-        schema = 4,
+        schema = 5,
         target = target:fullname(),
         root = parsed.root,
         root_name = parsed.root_name,
@@ -341,6 +350,7 @@ local function finalize(target, parsed, config, deps)
         builtin = builtin,
         providers = providers,
         search_dirs = config.search_dirs,
+        scanner_dirs = config.scanner_dirs,
         exported_dirs = config.exported_dirs,
         effective_defines = config.effective_defines,
         effective_options = config.effective_options,
@@ -388,7 +398,7 @@ function prepare(target, opt)
     if opt and opt.progress then
         progress.show(opt.progress, "scanning Bluespec %s", target:name())
     end
-    local raw = tools.run_depend(util.canonical_root(target), config.search_dirs,
+    local raw = tools.run_depend(util.canonical_root(target), config.scanner_dirs,
         config.effective_defines, config.effective_options)
     local parsed = parser.parse(raw, util.canonical_root(target))
     local graph = finalize(target, parsed, config, deps)
