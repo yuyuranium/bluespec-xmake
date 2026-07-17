@@ -363,6 +363,24 @@ local function build_bluesim(target, graph)
     tools.run_bsc(target, link_args)
 end
 
+local function reset_elaboration_artifacts(graph)
+    -- BSC's update check for .ba files does not include the full command-line
+    -- configuration. A package .bo can therefore be rebuilt for changed
+    -- defines/options while `-g` silently reuses an older top elaboration.
+    -- These files belong to this target's private bdir; dependency providers
+    -- live in their own output directories and their .bo files are untouched.
+    local removed = {}
+    for _, pattern in ipairs({"*.ba", "**/*.ba"}) do
+        for _, artifact in ipairs(os.files(path.join(graph.output_dir, pattern))) do
+            artifact = path.normalize(artifact)
+            if not removed[artifact] then
+                os.rm(artifact)
+                removed[artifact] = true
+            end
+        end
+    end
+end
+
 local function backend_inputs(target, graph)
     local files = {}
     for _, package in pairs(graph.packages or {}) do
@@ -419,6 +437,7 @@ local function backend_depend(target, graph, backend, callback)
         marker = path.absolute(target:targetfile())
     end
     local values = {
+        "bluespec-backend-depend-v2",
         backend,
         graph.fingerprint,
         graph.top or "",
@@ -449,18 +468,21 @@ local function schedule_backend(target, jobgraph, graph, backend, package_jobs)
             if backend == "bluesim" then
                 backend_depend(target, graph, backend, function()
                     show_progress()
+                    reset_elaboration_artifacts(graph)
                     build_bluesim(target, graph)
                     return {}
                 end)
             elseif backend == "verilog" then
                 backend_depend(target, graph, backend, function()
                     show_progress()
+                    reset_elaboration_artifacts(graph)
                     build_verilog(target, graph)
                     return {}
                 end)
             elseif backend == "systemc" then
                 backend_depend(target, graph, backend, function()
                     show_progress()
+                    reset_elaboration_artifacts(graph)
                     build_systemc(target, graph)
                     return {}
                 end)

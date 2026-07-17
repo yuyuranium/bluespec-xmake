@@ -63,6 +63,14 @@ local function assert_verilog_filelist(filelist, artifactdir, context)
     return lines
 end
 
+local function artifact_contents(files, context)
+    local contents = {}
+    for _, file in ipairs(files or {}) do
+        table.insert(contents, assert(io.readfile(file), context .. ": missing artifact " .. file))
+    end
+    return table.concat(contents, "\n")
+end
+
 local function copy_case(root, workroot, name)
     local source = path.join(root, "tests", "cases", name)
     local destination = path.join(workroot, name)
@@ -315,7 +323,11 @@ local function test_backends(root, workroot, run)
         raise("Bluesim executable is missing or not executable: %s", executable)
     end
     assert_file(executable .. ".so", "Bluesim shared object")
-    run(projectdir, {"run", "sim"}, {context = "xmake run sim"})
+    local initial_sim_output = run(projectdir, {"run", "sim"}, {context = "xmake run sim"})
+    assert_contains(initial_sim_output, "BACKEND_VALUE=1", "initial Bluesim behavior")
+    local sim_ba = assert_single_file(path.join(projectdir, "build", "**", "bdir", "mkTop.ba"),
+        "initial Bluesim elaboration artifact")
+    local initial_sim_ba = assert(io.readfile(sim_ba), "missing initial Bluesim .ba")
     local sim_cached = run(projectdir, {"build", "sim"}, {context = "cached Bluesim build"})
     assert_not_contains(sim_cached, "building Bluespec bluesim", "cached Bluesim build")
 
@@ -326,7 +338,9 @@ local function test_backends(root, workroot, run)
     local default_rtl_dir = path.join(default_builddir, "Verilog", "rtl")
     assert_contains(rtl, "processing Verilog targetfile " .. default_filelist,
         "standard targetfile consumer")
-    assert_verilog_filelist(default_filelist, default_rtl_dir, "default Verilog targetfile")
+    local initial_rtl_files = assert_verilog_filelist(default_filelist, default_rtl_dir,
+        "default Verilog targetfile")
+    local initial_rtl_contents = artifact_contents(initial_rtl_files, "initial Verilog behavior")
     local processed = path.join(default_builddir, "processed", "rtl.f")
     if io.readfile(processed) ~= io.readfile(default_filelist) then
         raise("downstream Xmake consumer did not process the public targetfile")
@@ -336,6 +350,49 @@ local function test_backends(root, workroot, run)
         {context = "cached Verilog public artifact"})
     assert_bluespec_cache_hit(rtl_cached, "cached Verilog public artifact")
     assert_not_contains(rtl_cached, "processing Verilog targetfile", "cached Verilog consumer")
+
+    local projectfile = path.join(projectdir, "xmake.lua")
+    local project_contents = assert(io.readfile(projectfile), "missing backend regression project")
+    os.sleep(1100)
+    local updated_project, replacements = project_contents:gsub(
+        'add_bsc_defines%("BACKEND_VALUE=1"%)', 'add_bsc_defines("BACKEND_VALUE=2")')
+    if replacements ~= 2 then
+        raise("backend define invalidation: expected two target define settings, got %d", replacements)
+    end
+    io.writefile(projectfile, updated_project)
+    run(projectdir, {"config", "-c"}, {context = "reload backend define"})
+
+    local define_sim = run(projectdir, {"build", "sim"}, {context = "Bluesim define invalidation"})
+    assert_contains(define_sim, "scanning Bluespec sim", "Bluesim define invalidation")
+    assert_contains(define_sim, "compiling Bluespec package Top", "Bluesim define invalidation")
+    assert_contains(define_sim, "building Bluespec bluesim sim", "Bluesim define invalidation")
+    local changed_sim_output = run(projectdir, {"run", "sim"}, {context = "changed define xmake run sim"})
+    assert_contains(changed_sim_output, "BACKEND_VALUE=2", "changed Bluesim behavior")
+    assert_not_contains(changed_sim_output, "BACKEND_VALUE=1", "changed Bluesim behavior")
+    if io.readfile(sim_ba) == initial_sim_ba then
+        raise("Bluesim define invalidation reused the stale top .ba artifact")
+    end
+    local define_sim_cached = run(projectdir, {"build", "sim"},
+        {context = "cached changed-define Bluesim"})
+    assert_bluespec_cache_hit(define_sim_cached, "cached changed-define Bluesim")
+
+    local define_rtl = run(projectdir, {"build", "rtl_consumer"},
+        {context = "Verilog define invalidation"})
+    assert_contains(define_rtl, "scanning Bluespec rtl", "Verilog define invalidation")
+    assert_contains(define_rtl, "compiling Bluespec package Top", "Verilog define invalidation")
+    assert_contains(define_rtl, "building Bluespec verilog rtl", "Verilog define invalidation")
+    assert_contains(define_rtl, "processing Verilog targetfile " .. default_filelist,
+        "Verilog define invalidation")
+    local changed_rtl_files = assert_verilog_filelist(default_filelist, default_rtl_dir,
+        "changed-define Verilog targetfile")
+    if artifact_contents(changed_rtl_files, "changed Verilog behavior") == initial_rtl_contents then
+        raise("Verilog define invalidation reused stale elaborated RTL")
+    end
+    local define_rtl_cached = run(projectdir, {"build", "rtl_consumer"},
+        {context = "cached changed-define Verilog"})
+    assert_bluespec_cache_hit(define_rtl_cached, "cached changed-define Verilog")
+    assert_not_contains(define_rtl_cached, "processing Verilog targetfile",
+        "cached changed-define Verilog consumer")
 
     local source = path.join(projectdir, "src", "Top.bsv")
     local source_contents = assert(io.readfile(source), "missing Verilog regression source")
