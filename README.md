@@ -71,6 +71,12 @@ The complete target-scope API is `set_bsc_root`, `set_bsc_top`,
 `bluespec.root`, `bluespec.top`, and the `.private`/`.public`/`.interface`
 keys below those namespaces.
 
+`set_bsc_root` and `add_bsc_package_dirs` are path-valued APIs: relative paths
+are resolved against the `xmake.lua` that declares the target (including a
+nested `includes()` file), while absolute paths are preserved.  The define,
+option, and link-option APIs remain opaque argument lists and are not
+rewritten as paths.
+
 Visibility follows dependency-to-consumer propagation: private values affect
 the declaring target, while public/interface package directories, defines,
 options, and link options are exported to consumers.

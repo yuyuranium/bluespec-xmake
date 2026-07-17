@@ -10,6 +10,25 @@ local function single_value_api(name)
     end
 end
 
+local function declaration_absolute(interp, pathname)
+    pathname = tostring(pathname)
+    if path.is_absolute(pathname) then
+        return path.normalize(pathname)
+    end
+    -- This callback runs in Xmake's description interpreter.  Its scriptdir
+    -- is the xmake.lua that declared the target, including nested includes.
+    return path.normalize(path.absolute(pathname, interp:scriptdir()))
+end
+
+local function path_single_value_api(name)
+    return function(interp, ...)
+        local arguments = {...}
+        for _, value in ipairs(arguments) do
+            interp:api_call("add_values", name, declaration_absolute(interp, value))
+        end
+    end
+end
+
 local function append_value(values, value)
     if type(value) == "table" and not table.is_dictionary(value) then
         for _, item in ipairs(value) do
@@ -20,7 +39,7 @@ local function append_value(values, value)
     end
 end
 
-local function add_visibility_api(name)
+local function add_visibility_api(name, path_valued)
     return function(interp, ...)
         local arguments = {...}
         local options = {}
@@ -38,6 +57,9 @@ local function add_visibility_api(name)
             raise("invalid Bluespec visibility %s (expected private, public, or interface)", visibility)
         end
         for _, value in ipairs(values) do
+            if path_valued then
+                value = declaration_absolute(interp, value)
+            end
             -- Store helpers in the same canonical namespace accepted by
             -- set_values(), while retaining no separate public manifest.
             local storage_name = name .. "." .. visibility
@@ -48,9 +70,9 @@ end
 
 interp_add_scopeapis({
     values = {
-        {"target.set_bsc_root", single_value_api("bluespec.root")},
+        {"target.set_bsc_root", path_single_value_api("bluespec.root")},
         {"target.set_bsc_top", single_value_api("bluespec.top")},
-        {"target.add_bsc_package_dirs", add_visibility_api("bluespec.package_dirs")},
+        {"target.add_bsc_package_dirs", add_visibility_api("bluespec.package_dirs", true)},
         {"target.add_bsc_defines", add_visibility_api("bluespec.defines")},
         {"target.add_bsc_options", add_visibility_api("bluespec.options")},
         {"target.add_bsc_link_options", add_visibility_api("bluespec.link_options")},

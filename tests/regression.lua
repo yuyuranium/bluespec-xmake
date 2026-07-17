@@ -98,7 +98,7 @@ local function runner(root, workroot)
         local stdout = path.join(logdir, basename .. ".out")
         local stderr = path.join(logdir, basename .. ".err")
         local code, errors = os.execv(os.programfile(), arguments, {
-            curdir = projectdir,
+            curdir = opt.curdir or projectdir,
             envs = {BLUESPEC_XMAKE_ROOT = root},
             stdout = stdout,
             stderr = stderr,
@@ -117,7 +117,110 @@ local function runner(root, workroot)
     end
 end
 
-local function configure(run, projectdir)
+local configure
+
+local function test_path_relative(root, workroot, run)
+    local projectdir = copy_case(root, workroot, "path_relative")
+    local outside = path.join(workroot, "path-relative-cwd")
+    local wrapper_cwd = path.join(workroot, "path-relative-wrapper-cwd")
+    os.mkdir(outside)
+    os.mkdir(wrapper_cwd)
+    configure(run, projectdir)
+
+    local initial = run(projectdir, {"build", "relative"}, {
+        curdir = outside,
+        context = "declaration-relative standalone build",
+    })
+    assert_contains(initial, "scanning Bluespec relative", "declaration-relative standalone build")
+    assert_contains(initial, "compiling Bluespec package Helper", "declaration-relative standalone build")
+    assert_contains(initial, "compiling Bluespec package Root", "declaration-relative standalone build")
+    assert_file(path.join(outside, "build", "**", "bdir", "Root.bo"),
+        "declaration-relative standalone root artifact")
+
+    local absolute = run(projectdir, {"build", "absolute"}, {
+        curdir = outside,
+        context = "absolute Bluespec root build",
+    })
+    assert_contains(absolute, "scanning Bluespec absolute", "absolute Bluespec root build")
+    assert_contains(absolute, "compiling Bluespec package Helper", "absolute Bluespec root build")
+    assert_contains(absolute, "compiling Bluespec package Root", "absolute Bluespec root build")
+
+    local cached = run(projectdir, {"build", "relative"}, {
+        curdir = outside,
+        context = "declaration-relative cache hit",
+    })
+    assert_bluespec_cache_hit(cached, "declaration-relative cache hit")
+
+    local helper = path.join(projectdir, "nested", "packages", "Helper.bsv")
+    os.sleep(1100)
+    io.writefile(helper, [[package Helper;
+
+function Integer helperValue();
+    return 43;
+endfunction
+
+endpackage
+]])
+    local source_changed = run(projectdir, {"build", "relative"}, {
+        curdir = outside,
+        context = "declaration-relative source invalidation",
+    })
+    assert_contains(source_changed, "scanning Bluespec relative", "declaration-relative source invalidation")
+    assert_contains(source_changed, "compiling Bluespec package Helper",
+        "declaration-relative source invalidation")
+    assert_contains(source_changed, "compiling Bluespec package Root",
+        "declaration-relative source invalidation")
+
+    local extra = path.join(projectdir, "nested", "packages", "Extra.bsv")
+    os.sleep(1100)
+    io.writefile(extra, [[package Extra;
+endpackage
+]])
+    local directory_changed = run(projectdir, {"build", "relative"}, {
+        curdir = outside,
+        context = "declaration-relative package directory invalidation",
+    })
+    assert_contains(directory_changed, "scanning Bluespec relative",
+        "declaration-relative package directory invalidation")
+    assert_bluespec_cache_hit(run(projectdir, {"build", "relative"}, {
+        curdir = outside,
+        context = "declaration-relative post-directory cache hit",
+    }), "declaration-relative post-directory cache hit")
+
+    local wrapper = path.join(projectdir, "wrapper")
+    configure(run, wrapper)
+    local wrapped = run(wrapper, {"build", "relative"}, {
+        curdir = wrapper_cwd,
+        context = "nested include declaration-relative build",
+    })
+    assert_contains(wrapped, "scanning Bluespec relative", "nested include declaration-relative build")
+    assert_contains(wrapped, "compiling Bluespec package Helper", "nested include declaration-relative build")
+    assert_contains(wrapped, "compiling Bluespec package Root", "nested include declaration-relative build")
+    local wrapper_root = assert_single_file(path.join(wrapper_cwd, "build", "**", "bdir", "Root.bo"),
+        "nested include root artifact")
+    local wrapper_cached = run(wrapper, {"build", "relative"}, {
+        curdir = wrapper_cwd,
+        context = "nested include declaration-relative cache hit",
+    })
+    assert_bluespec_cache_hit(wrapper_cached, "nested include declaration-relative cache hit")
+
+    run(wrapper, {"config", "-c", "-o", "alt-build"}, {
+        curdir = wrapper_cwd,
+        context = "declaration-relative alternate builddir configuration",
+    })
+    local alternate = run(wrapper, {"build", "relative"}, {
+        curdir = wrapper_cwd,
+        context = "declaration-relative alternate builddir",
+    })
+    assert_contains(alternate, "scanning Bluespec relative", "declaration-relative alternate builddir")
+    assert_file(path.join(wrapper_cwd, "alt-build", "**", "bdir", "Root.bo"),
+        "declaration-relative alternate root artifact")
+    if not os.isfile(wrapper_root) then
+        raise("alternate declaration-relative build removed the default artifact")
+    end
+end
+
+configure = function(run, projectdir)
     run(projectdir, {"config", "-c"}, {context = "configure " .. path.basename(projectdir)})
 end
 
@@ -568,6 +671,7 @@ function main()
     os.mkdir(workroot)
     local run = runner(root, workroot)
     local tests = {
+        {"declaration-relative path APIs", function() test_path_relative(root, workroot, run) end},
         {"incremental graph/cache", function() test_incremental(root, workroot, run) end},
         {"generated BSV", function() test_generated(root, workroot, run) end},
         {"valued/valueless defines", function() test_defines(root, workroot, run) end},
