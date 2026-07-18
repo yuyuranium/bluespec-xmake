@@ -62,6 +62,17 @@ function identity()
     return table.concat({toolset.bsc, toolset.bluetcl, toolset.bluespecdir, toolset.version}, "|")
 end
 
+-- BSC delegates Bluesim's generated C++ compilation and linking to $CXX.
+-- Use the same driver Xmake selected for the target instead of inheriting an
+-- ambient CXX that may belong to a different compiler or C++ runtime ABI.
+function cxx_driver(target)
+    return target:tool("cxx")
+end
+
+function backend_identity(target)
+    return table.concat({identity(), "cxx=" .. tostring(cxx_driver(target) or "")}, "|")
+end
+
 function builtin_dirs()
     local toolset = tools()
     local result = {}
@@ -183,5 +194,9 @@ end
 function run_bsc(target, args)
     local toolset = tools()
     local envs = {BLUESPECDIR = toolset.bluespecdir}
+    local cxx = cxx_driver(target)
+    if cxx then
+        envs.CXX = cxx
+    end
     os.vrunv(toolset.bsc, args, {envs = envs})
 end

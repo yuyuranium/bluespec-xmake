@@ -437,11 +437,11 @@ local function backend_depend(target, graph, backend, callback)
         marker = path.absolute(target:targetfile())
     end
     local values = {
-        "bluespec-backend-depend-v2",
+        "bluespec-backend-depend-v3",
         backend,
         graph.fingerprint,
         graph.top or "",
-        tools.identity(),
+        tools.backend_identity(target),
         table.concat(graph.effective_link_options or {}, "\n"),
         table.concat(util.list(target:get("links")), "\n"),
         table.concat(util.list(target:get("linkdirs")), "\n"),

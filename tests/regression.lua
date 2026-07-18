@@ -97,9 +97,13 @@ local function runner(root, workroot)
         local basename = string.format("%03d-%s", sequence, path.basename(projectdir))
         local stdout = path.join(logdir, basename .. ".out")
         local stderr = path.join(logdir, basename .. ".err")
+        local envs = {BLUESPEC_XMAKE_ROOT = root}
+        for name, value in pairs(opt.envs or {}) do
+            envs[name] = value
+        end
         local code, errors = os.execv(os.programfile(), arguments, {
             curdir = opt.curdir or projectdir,
-            envs = {BLUESPEC_XMAKE_ROOT = root},
+            envs = envs,
             stdout = stdout,
             stderr = stderr,
             try = true,
@@ -542,6 +546,78 @@ local function test_backends(root, workroot, run)
     assert_not_contains(restored, alt_filelist, "restored Verilog targetfile")
 end
 
+local function write_cxx_wrapper(filename, driver, marker, fail)
+    local function shell_quote(value)
+        return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
+    end
+    local lines = {
+        "#!/bin/sh",
+        "printf '%s\\n' invoked >> " .. shell_quote(marker),
+    }
+    if fail then
+        table.insert(lines, "exit 99")
+    else
+        table.insert(lines, "exec " .. shell_quote(driver) .. " \"$@\"")
+    end
+    io.writefile(filename, table.concat(lines, "\n") .. "\n")
+    os.vrunv("chmod", {"+x", filename})
+end
+
+local function test_cxx_driver(root, workroot, run)
+    local find_tool = import("lib.detect.find_tool")
+    local detected = find_tool("c++") or find_tool("g++") or find_tool("clang++")
+    if not detected or not detected.program then
+        raise("CXX-driver regression requires a C++ compiler")
+    end
+
+    local projectdir = copy_case(root, workroot, "cxx_driver")
+    local wrapper_a = path.join(projectdir, "selected-cxx-a")
+    local wrapper_b = path.join(projectdir, "selected-cxx-b")
+    local blocker = path.join(projectdir, "ambient-cxx-must-not-run")
+    local marker_a = wrapper_a .. ".log"
+    local marker_b = wrapper_b .. ".log"
+    local blocker_marker = blocker .. ".log"
+    write_cxx_wrapper(wrapper_a, detected.program, marker_a)
+    write_cxx_wrapper(wrapper_b, detected.program, marker_b)
+    write_cxx_wrapper(blocker, detected.program, blocker_marker, true)
+
+    local function options(selected, context)
+        return {
+            context = context,
+            envs = {
+                BSC_TEST_CXX = selected,
+                CXX = blocker,
+            },
+        }
+    end
+
+    run(projectdir, {"config", "-c"}, options(wrapper_a, "configure selected CXX A"))
+    local initial = run(projectdir, {"build", "sim"}, options(wrapper_a, "selected CXX A build"))
+    assert_contains(initial, "building Bluespec bluesim sim", "selected CXX A build")
+    assert_file(marker_a, "selected CXX A invocation")
+    if os.isfile(blocker_marker) then
+        raise("BSC used ambient CXX instead of the target's selected C++ driver")
+    end
+    local run_output = run(projectdir, {"run", "sim"}, options(wrapper_a, "selected CXX A run"))
+    assert_contains(run_output, "CXX_DRIVER_OK", "selected CXX A run")
+
+    local cached = run(projectdir, {"build", "sim"}, options(wrapper_a, "selected CXX A cache hit"))
+    assert_bluespec_cache_hit(cached, "selected CXX A cache hit")
+
+    run(projectdir, {"config", "-c"}, options(wrapper_b, "configure selected CXX B"))
+    local changed = run(projectdir, {"build", "sim"}, options(wrapper_b, "selected CXX change"))
+    assert_contains(changed, "building Bluespec bluesim sim", "selected CXX change")
+    assert_not_contains(changed, "compiling Bluespec package", "selected CXX change")
+    assert_file(marker_b, "selected CXX B invocation")
+    if os.isfile(blocker_marker) then
+        raise("BSC used ambient CXX after the target toolchain changed")
+    end
+
+    local changed_cached = run(projectdir, {"build", "sim"},
+        options(wrapper_b, "selected CXX B cache hit"))
+    assert_bluespec_cache_hit(changed_cached, "selected CXX B cache hit")
+end
+
 local function test_native_bdpi_builddir(root, workroot, run)
     local projectdir = copy_case(root, workroot, "native_bdpi")
     configure(run, projectdir)
@@ -550,7 +626,11 @@ local function test_native_bdpi_builddir(root, workroot, run)
     assert_contains(initial, "scanning Bluespec native_bdpi", "native BDPI build")
     assert_contains(initial, "compiling Bluespec package NativeBDPI", "native BDPI build")
     assert_contains(initial, "building Bluespec bluesim native_bdpi", "native BDPI build")
-    assert_contains(initial, "-Wl,--whole-archive", "native BDPI forced load")
+    if os.host() == "macosx" then
+        assert_contains(initial, "-Wl,-force_load,", "native BDPI forced load")
+    else
+        assert_contains(initial, "-Wl,--whole-archive", "native BDPI forced load")
+    end
     assert_contains(initial, "-fPIC", "native BDPI PIC build")
 
     local builddir = path.join(projectdir, "build")
@@ -676,6 +756,7 @@ function main()
         {"generated BSV", function() test_generated(root, workroot, run) end},
         {"valued/valueless defines", function() test_defines(root, workroot, run) end},
         {"Bluesim/Verilog backends", function() test_backends(root, workroot, run) end},
+        {"target CXX selection/cache identity", function() test_cxx_driver(root, workroot, run) end},
         {"native BDPI/builddir isolation", function() test_native_bdpi_builddir(root, workroot, run) end},
         {"cycle diagnostic", function() test_cycle(root) end},
         {"duplicate provider", function()

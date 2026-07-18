@@ -12,6 +12,8 @@ dynamic import edge changes, dependency `.bo` reuse, generated BSV input/config
 invalidation and cache hits, valued/valueless defines and define
 invalidation/propagation, Bluesim execution/output placement,
 direct/transitive static BDPI dependencies, builddir graph isolation,
+target-selected C++ driver pinning and backend invalidation when that driver
+changes (including protection from an unrelated ambient `CXX`),
 deterministic Verilog filelists exposed through standard `targetfile()`,
 downstream filelist invalidation, Verilog builddir relocation, cycles,
 duplicate providers, and unexported packages.  It does not require a
