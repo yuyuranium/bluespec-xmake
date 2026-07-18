@@ -337,7 +337,7 @@ local function finalize(target, parsed, config, deps)
     })
 
     return {
-        schema = 5,
+        schema = 6,
         target = target:fullname(),
         root = parsed.root,
         root_name = parsed.root_name,
@@ -374,8 +374,28 @@ local function cleanup_removed_packages(target, old, graph)
             local current_bo = current and current.bo
             if current_bo ~= package.bo and is_under(package.bo, {old.output_dir}) then
                 os.rm(package.bo)
+                util.invalidate_artifact(package.bo)
                 os.rm(target:dependfile(package.bo))
             end
+        end
+    end
+end
+
+local function discard_incomplete_packages(target, graph)
+    if not graph or not graph.output_dir then
+        return
+    end
+    for name, package in pairs(graph.packages or {}) do
+        if graph.owned and graph.owned[name] and package.bo and
+            is_under(package.bo, {graph.output_dir}) and os.isfile(package.bo) and
+            not util.artifact_complete(package.bo) then
+            -- The marker is removed before BSC starts and records the final
+            -- output stamp only after success.  A missing/mismatched marker
+            -- therefore identifies target-owned interrupted or truncated
+            -- state without inspecting or deleting provider artifacts.
+            os.rm(package.bo)
+            util.invalidate_artifact(package.bo)
+            os.rm(target:dependfile(package.bo))
         end
     end
 end
@@ -387,6 +407,7 @@ end
 
 function prepare(target, opt)
     local old = get(target)
+    discard_incomplete_packages(target, old)
     local deps = dep_graphs(target)
     local config = effective_config(target, deps)
     validate_local_sources(config)
@@ -398,11 +419,12 @@ function prepare(target, opt)
     if opt and opt.progress then
         progress.show(opt.progress, "scanning Bluespec %s", target:name())
     end
-    local raw = tools.run_depend(util.canonical_root(target), config.scanner_dirs,
+    local raw = tools.run_depend(target, util.canonical_root(target), config.scanner_dirs,
         config.effective_defines, config.effective_options)
     local parsed = parser.parse(raw, util.canonical_root(target))
     local graph = finalize(target, parsed, config, deps)
     cleanup_removed_packages(target, old, graph)
+    discard_incomplete_packages(target, graph)
     cache.set(target, graph)
     return graph
 end

@@ -18,6 +18,42 @@ local function find_program(name)
     return nil
 end
 
+local function canonical_program(program)
+    if not program or program == "" then
+        return nil
+    end
+    local resolved
+    if path.is_absolute(program) then
+        resolved = program
+    elseif os.isfile(program) then
+        resolved = path.absolute(program)
+    else
+        resolved = find_program(program)
+    end
+    return resolved and path.normalize(path.absolute(resolved)) or nil
+end
+
+local function program_stamp(program)
+    if os.isfile(program) then
+        return tostring(os.mtime(program) or 0) .. ":" .. tostring(os.filesize(program) or 0)
+    end
+    return "missing"
+end
+
+local function target_driver(target, kind)
+    local program, name = target:tool(kind)
+    program = canonical_program(program)
+    if not program then
+        raise("target(%s) has no Xmake %s compiler driver for BSC", target:name(), kind)
+    end
+    return {
+        kind = kind,
+        name = tostring(name or ""),
+        program = program,
+        stamp = program_stamp(program),
+    }
+end
+
 local function quote_tcl(value)
     value = tostring(value)
     value = value:gsub("\\", "\\\\")
@@ -31,6 +67,18 @@ end
 local function run_quiet(program, args, options)
     local stdout, stderr = os.iorunv(program, args, options or {})
     return stdout, stderr
+end
+
+local function raise_bsc_state_error(target, errors)
+    errors = tostring(errors or "")
+    if target and errors:find("BinData.getB: unexpected end of byte stream", 1, true) then
+        local util = import("bluespec.util")
+        raise("BSC detected truncated or mixed compiler state for target(%s) in %s; " ..
+            "only this target's private Bluespec state should be rebuilt " ..
+            "(run `xmake clean %s` and then build it again)\n%s",
+            target:name(), util.state_dir(target), target:name(), errors)
+    end
+    raise("%s", errors ~= "" and errors or "BSC invocation failed")
 end
 
 function tools()
@@ -62,15 +110,33 @@ function identity()
     return table.concat({toolset.bsc, toolset.bluetcl, toolset.bluespecdir, toolset.version}, "|")
 end
 
--- BSC delegates Bluesim's generated C++ compilation and linking to $CXX.
--- Use the same driver Xmake selected for the target instead of inheriting an
--- ambient CXX that may belong to a different compiler or C++ runtime ABI.
-function cxx_driver(target)
-    return target:tool("cxx")
+-- BSC invokes native compilers internally for Bluesim/SystemC.  Derive both
+-- its environment and its incremental identity from the target's compiler
+-- slots, never from the shared-library linker slot (`sh` can be link.exe).
+function execution_environment(target)
+    local toolset = tools()
+    local cc = target_driver(target, "cc")
+    local cxx = target_driver(target, "cxx")
+    return {
+        BLUESPECDIR = toolset.bluespecdir,
+        CC = cc.program,
+        CXX = cxx.program,
+    }, {cc = cc, cxx = cxx}
 end
 
-function backend_identity(target)
-    return table.concat({identity(), "cxx=" .. tostring(cxx_driver(target) or "")}, "|")
+function execution_identity(target)
+    local _, drivers = execution_environment(target)
+    local values = {"bsc-native-toolchain-v1"}
+    for _, kind in ipairs({"cc", "cxx"}) do
+        local driver = drivers[kind]
+        table.insert(values, table.concat({
+            kind,
+            driver.program,
+            driver.name,
+            driver.stamp,
+        }, "="))
+    end
+    return table.concat(values, "|")
 end
 
 function builtin_dirs()
@@ -102,7 +168,7 @@ function builtin_packages()
     return packages
 end
 
-function run_depend(root, package_dirs, defines, options)
+function run_depend(target, root, package_dirs, defines, options)
     local toolset = tools()
     local search = {}
     for _, dir in ipairs(util.list(package_dirs)) do
@@ -141,9 +207,26 @@ function run_depend(root, package_dirs, defines, options)
     -- The input file is an ephemeral stdin buffer and is removed immediately.
     local input = os.tmpfile()
     io.writefile(input, table.concat(commands, "\n") .. "\n")
-    local output, errors = run_quiet(toolset.bluetcl, {}, {stdin = input})
+    local output, errors
+    local succeeded = try {
+        function()
+            output, errors = run_quiet(toolset.bluetcl, {}, {stdin = input})
+            return true
+        end,
+        catch {
+            function(run_errors)
+                errors = tostring(run_errors)
+            end,
+        },
+    }
     os.rm(input)
+    if not succeeded then
+        raise_bsc_state_error(target, errors)
+    end
     if not output or output == "" then
+        if errors and tostring(errors):find("BinData.getB: unexpected end of byte stream", 1, true) then
+            raise_bsc_state_error(target, errors)
+        end
         raise("Bluetcl dependency scan failed for %s\n%s", root, errors or "")
     end
     return output
@@ -193,10 +276,20 @@ end
 
 function run_bsc(target, args)
     local toolset = tools()
-    local envs = {BLUESPECDIR = toolset.bluespecdir}
-    local cxx = cxx_driver(target)
-    if cxx then
-        envs.CXX = cxx
+    local envs = execution_environment(target)
+    local errors
+    local succeeded = try {
+        function()
+            os.vrunv(toolset.bsc, args, {envs = envs})
+            return true
+        end,
+        catch {
+            function(run_errors)
+                errors = tostring(run_errors)
+            end,
+        },
+    }
+    if not succeeded then
+        raise_bsc_state_error(target, errors)
     end
-    os.vrunv(toolset.bsc, args, {envs = envs})
 end

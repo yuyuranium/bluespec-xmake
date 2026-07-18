@@ -86,6 +86,29 @@ local function runner(root, workroot)
     local sequence = 0
     return function(projectdir, arguments, opt)
         opt = opt or {}
+        if os.host() == "macosx" and arguments[1] == "config" then
+            arguments = table.clone(arguments)
+            local defaults = {
+                toolchain = "xcode",
+                cc = "/usr/bin/clang",
+                cxx = "/usr/bin/clang++",
+                ld = "/usr/bin/clang++",
+                sh = "/usr/bin/clang++",
+            }
+            for name, value in pairs(defaults) do
+                local prefix = "--" .. name .. "="
+                local configured = false
+                for _, argument in ipairs(arguments) do
+                    if tostring(argument):find(prefix, 1, true) == 1 then
+                        configured = true
+                        break
+                    end
+                end
+                if not configured then
+                    table.insert(arguments, prefix .. value)
+                end
+            end
+        end
         local project_arguments = {arguments[1], "-P", projectdir}
         for index = 2, #arguments do
             table.insert(project_arguments, arguments[index])
@@ -225,7 +248,8 @@ endpackage
 end
 
 configure = function(run, projectdir)
-    run(projectdir, {"config", "-c"}, {context = "configure " .. path.basename(projectdir)})
+    local args = {"config", "-c"}
+    run(projectdir, args, {context = "configure " .. path.basename(projectdir)})
 end
 
 local function test_incremental(root, workroot, run)
@@ -261,6 +285,19 @@ local function test_incremental(root, workroot, run)
     end
     local cached_rtl = run(projectdir, {"build", "rtl"}, {context = "cache-hit incremental backend"})
     assert_bluespec_cache_hit(cached_rtl, "cache-hit incremental backend")
+
+    -- A successful package compile leaves a private output-stamp marker.  A
+    -- truncated .bo no longer matching that stamp is discarded by its owner
+    -- before dependent scans/builds, avoiding BinData.getB on mixed state.
+    io.writefile(old_leaf_bo, "truncated\n")
+    local recovered = run(projectdir, {"build", "consumer"}, {context = "truncated .bo recovery"})
+    assert_contains(recovered, "compiling Bluespec package Leaf", "truncated .bo recovery")
+    assert_contains(recovered, "compiling Bluespec package Base", "truncated .bo recovery")
+    assert_contains(recovered, "compiling Bluespec package Consumer", "truncated .bo recovery")
+    assert_not_contains(recovered, "BinData.getB", "truncated .bo recovery")
+    assert_bluespec_cache_hit(run(projectdir, {"build", "consumer"}, {
+        context = "post-recovery cache hit",
+    }), "post-recovery cache hit")
 
     local leaf = path.join(projectdir, "src", "library", "Leaf.bsv")
     os.sleep(1100)
@@ -607,7 +644,7 @@ local function test_cxx_driver(root, workroot, run)
     run(projectdir, {"config", "-c"}, options(wrapper_b, "configure selected CXX B"))
     local changed = run(projectdir, {"build", "sim"}, options(wrapper_b, "selected CXX change"))
     assert_contains(changed, "building Bluespec bluesim sim", "selected CXX change")
-    assert_not_contains(changed, "compiling Bluespec package", "selected CXX change")
+    assert_contains(changed, "compiling Bluespec package Top", "selected CXX change")
     assert_file(marker_b, "selected CXX B invocation")
     if os.isfile(blocker_marker) then
         raise("BSC used ambient CXX after the target toolchain changed")
@@ -626,11 +663,6 @@ local function test_native_bdpi_builddir(root, workroot, run)
     assert_contains(initial, "scanning Bluespec native_bdpi", "native BDPI build")
     assert_contains(initial, "compiling Bluespec package NativeBDPI", "native BDPI build")
     assert_contains(initial, "building Bluespec bluesim native_bdpi", "native BDPI build")
-    if os.host() == "macosx" then
-        assert_contains(initial, "-Wl,-force_load,", "native BDPI forced load")
-    else
-        assert_contains(initial, "-Wl,--whole-archive", "native BDPI forced load")
-    end
     assert_contains(initial, "-fPIC", "native BDPI PIC build")
 
     local builddir = path.join(projectdir, "build")
@@ -645,6 +677,14 @@ local function test_native_bdpi_builddir(root, workroot, run)
     assert_file(old_executable .. ".so", "default builddir Bluesim model")
     if old_golden == old_helper then
         raise("native BDPI closure unexpectedly collapsed two archives into one path")
+    end
+    if os.host() == "macosx" then
+        assert_contains(initial, "-Wl,-force_load," .. path.absolute(old_golden),
+            "native BDPI absolute forced load")
+        assert_contains(initial, "-Wl,-force_load," .. path.absolute(old_helper),
+            "transitive native BDPI absolute forced load")
+    else
+        assert_contains(initial, "-Wl,--whole-archive", "native BDPI forced load")
     end
 
     local run_output = run(projectdir, {"run", "native_bdpi"}, {context = "run native BDPI"})
@@ -710,6 +750,108 @@ local function test_native_bdpi_builddir(root, workroot, run)
     assert_bluespec_cache_hit(restored_cached, "cached restored builddir")
 end
 
+local function parse_tool(output, name, context)
+    local value = output:match("BSC_TARGET_TOOL_" .. name .. "=([^\r\n]+)")
+    if not value or value == "" then
+        raise("%s: missing BSC_TARGET_TOOL_%s in configure output\n%s", context, name, output)
+    end
+    return path.normalize(value)
+end
+
+local function write_driver(pathname, driver)
+    io.writefile(pathname, "#!/bin/sh\nexec \"" .. driver .. "\" \"$@\"\n")
+    local code, errors = os.execv("chmod", {"755", pathname}, {try = true})
+    if code ~= 0 then
+        raise("failed to make compiler fixture executable: %s\n%s", pathname, tostring(errors or ""))
+    end
+end
+
+local function test_bsc_native_toolchain(root, workroot, run)
+    if os.host() == "windows" then
+        return
+    end
+    local projectdir = copy_case(root, workroot, "toolchain_identity")
+    local configure_args = {"config", "-c"}
+    local configured = run(projectdir, configure_args, {
+        context = "configure BSC native toolchain",
+        envs = {BLUESPEC_XMAKE_REPORT_TOOLS = "1"},
+    })
+    local cc = parse_tool(configured, "cc", "configure BSC native toolchain")
+    local cxx = parse_tool(configured, "cxx", "configure BSC native toolchain")
+    local sh = parse_tool(configured, "sh", "configure BSC native toolchain")
+    if os.host() == "macosx" and (not cc:find("clang", 1, true) or not cxx:find("clang++", 1, true)) then
+        raise("Darwin regression expected Xmake clang drivers, got cc=%s cxx=%s sh=%s", cc, cxx, sh)
+    end
+
+    local hostile = path.join(projectdir, "hostile-compiler")
+    io.writefile(hostile, "#!/bin/sh\nexit 97\n")
+    local code, errors = os.execv("chmod", {"755", hostile}, {try = true})
+    if code ~= 0 then
+        raise("failed to make hostile compiler executable: %s", tostring(errors or ""))
+    end
+    local first = run(projectdir, {"build", "-v", "toolchain_sim"}, {
+        context = "hostile inherited compiler environment",
+        envs = {CC = hostile, CXX = hostile},
+    })
+    assert_contains(first, "exec: " .. cxx, "BSC selected Xmake C++ driver")
+    assert_not_contains(first, "exec: " .. hostile, "BSC ignored inherited CXX")
+    assert_contains(run(projectdir, {"run", "toolchain_sim"}, {
+        context = "run hostile-environment Bluesim",
+        envs = {CC = hostile, CXX = hostile},
+    }), "TOOLCHAIN_OK", "run hostile-environment Bluesim")
+    local package_bo = assert_single_file(path.join(projectdir, "build", "**", "bdir", "ToolchainTop.bo"),
+        "toolchain package output")
+    local model = assert_single_file(path.join(projectdir, "build", "**", "simdir", "model_mkToolchainTop.cxx"),
+        "toolchain generated model")
+    local executable = path.join(projectdir, "build", "bin", "toolchain_sim")
+    local package_mtime = os.mtime(package_bo)
+    local model_mtime = os.mtime(model)
+    local executable_mtime = os.mtime(executable)
+    assert_bluespec_cache_hit(run(projectdir, {"build", "toolchain_sim"}, {
+        context = "initial toolchain cache hit",
+        envs = {CC = hostile, CXX = hostile},
+    }), "initial toolchain cache hit")
+
+    local alternate = path.join(projectdir, "alternate-toolchain")
+    os.mkdir(alternate)
+    local alt_cc = path.join(alternate, path.filename(cc))
+    local alt_cxx = path.join(alternate, path.filename(cxx))
+    write_driver(alt_cc, cc)
+    write_driver(alt_cxx, cxx)
+    os.sleep(1100)
+    local changed_args = {
+        "config", "-c", "--cc=" .. alt_cc, "--cxx=" .. alt_cxx,
+        "--ld=" .. alt_cxx, "--sh=" .. alt_cxx,
+    }
+    local changed_tools = run(projectdir, changed_args, {
+        context = "configure alternate Xmake compiler identity",
+        envs = {BLUESPEC_XMAKE_REPORT_TOOLS = "1"},
+    })
+    assert_contains(changed_tools, "BSC_TARGET_TOOL_cxx=" .. alt_cxx,
+        "alternate Xmake compiler identity")
+    local changed = run(projectdir, {"build", "toolchain_sim"}, {
+        context = "Xmake compiler identity invalidation",
+        envs = {CC = hostile, CXX = hostile},
+    })
+    assert_contains(changed, "scanning Bluespec toolchain_sim", "compiler identity graph invalidation")
+    assert_contains(changed, "compiling Bluespec package ToolchainTop", "compiler identity package invalidation")
+    assert_contains(changed, "building Bluespec bluesim toolchain_sim", "compiler identity backend invalidation")
+    if os.mtime(package_bo) == package_mtime then
+        raise("compiler identity change did not rebuild the package output")
+    end
+    if os.mtime(model) == model_mtime or os.mtime(executable) == executable_mtime then
+        raise("compiler identity change did not regenerate/relink the Bluesim model")
+    end
+    assert_contains(run(projectdir, {"run", "toolchain_sim"}, {
+        context = "run alternate-identity Bluesim",
+        envs = {CC = hostile, CXX = hostile},
+    }), "TOOLCHAIN_OK", "run alternate-identity Bluesim")
+    assert_bluespec_cache_hit(run(projectdir, {"build", "toolchain_sim"}, {
+        context = "alternate toolchain cache hit",
+        envs = {CC = hostile, CXX = hostile},
+    }), "alternate toolchain cache hit")
+end
+
 local function test_cycle(root)
     local parser = import("bluespec.parser")
     local projectdir = os.projectdir()
@@ -757,6 +899,7 @@ function main()
         {"valued/valueless defines", function() test_defines(root, workroot, run) end},
         {"Bluesim/Verilog backends", function() test_backends(root, workroot, run) end},
         {"target CXX selection/cache identity", function() test_cxx_driver(root, workroot, run) end},
+        {"BSC native toolchain identity", function() test_bsc_native_toolchain(root, workroot, run) end},
         {"native BDPI/builddir isolation", function() test_native_bdpi_builddir(root, workroot, run) end},
         {"cycle diagnostic", function() test_cycle(root) end},
         {"duplicate provider", function()

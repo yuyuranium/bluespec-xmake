@@ -11,7 +11,7 @@ end
 
 local function target_key(target)
     return table.concat({
-        "schema=5",
+        "schema=6",
         "project=" .. absolute(os.projectdir()),
         "target=" .. target:fullname(),
         "plat=" .. tostring(target:plat()),
@@ -58,9 +58,10 @@ end
 
 function fingerprint(target, inputs, config)
     local parts = {
-        "schema=5",
+        "schema=6",
         "target=" .. target_key(target),
         "bsc=" .. tools.identity(),
+        "bsc-execution=" .. tools.execution_identity(target),
     }
     for _, value in ipairs(config or {}) do
         table.insert(parts, "config=" .. tostring(value))

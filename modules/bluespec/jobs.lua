@@ -44,14 +44,15 @@ end
 -- File mtimes are tracked separately by depend.on_changed(); these values
 -- describe everything structural that selects the source/provider closure or
 -- changes the exact compile command.
-local function package_depend_values(graph, name, package, program, args)
-    local values = {"bluespec-package-depend-v3"}
+local function package_depend_values(target, graph, name, package, program, args)
+    local values = {"bluespec-package-depend-v4"}
     add_value(values, "target", graph.target)
     add_value(values, "package", name)
     add_value(values, "owner", package.target)
     add_value(values, "source", package.source)
     add_value(values, "output", package.bo)
     add_value(values, "toolchain", tools.identity())
+    add_value(values, "execution-toolchain", tools.execution_identity(target))
     add_value(values, "program", program)
     for index, argument in ipairs(args or {}) do
         add_value(values, string.format("argv[%d]", index), argument)
@@ -152,19 +153,21 @@ local function schedule_packages(target, jobgraph, graph, backend)
                     end
                     inputs = util.unique_sorted(inputs)
                     local program, args = tools.package_args(target, graph, package, nil)
-                    local values = package_depend_values(graph, name, package, program, args)
+                    local values = package_depend_values(target, graph, name, package, program, args)
                     depend.on_changed(function()
                         if opt and opt.progress then
                             progress.show(opt.progress, "compiling Bluespec package %s", name)
                         end
                         os.mkdir(graph.output_dir)
+                        util.invalidate_artifact(package.bo)
                         tools.run_bsc(target, args)
+                        util.mark_artifact_complete(package.bo)
                         return {}
                     end, {
                         dependfile = target:dependfile(package.bo),
                         files = inputs,
                         values = values,
-                        changed = target:is_rebuilt() or not os.isfile(package.bo),
+                        changed = target:is_rebuilt() or not util.artifact_complete(package.bo),
                     })
                 end)
             end
@@ -381,6 +384,16 @@ local function reset_elaboration_artifacts(graph)
     end
 end
 
+local function mark_packages_complete(graph)
+    -- Backend `-u` invocations may refresh owned .bo files.  Record their
+    -- post-backend stamps so an unchanged next build remains a full cache hit.
+    for name, package in pairs(graph.packages or {}) do
+        if graph.owned and graph.owned[name] and package.bo and os.isfile(package.bo) then
+            util.mark_artifact_complete(package.bo)
+        end
+    end
+end
+
 local function backend_inputs(target, graph)
     local files = {}
     for _, package in pairs(graph.packages or {}) do
@@ -441,18 +454,30 @@ local function backend_depend(target, graph, backend, callback)
         backend,
         graph.fingerprint,
         graph.top or "",
-        tools.backend_identity(target),
+        tools.identity(),
+        tools.execution_identity(target),
         table.concat(graph.effective_link_options or {}, "\n"),
         table.concat(util.list(target:get("links")), "\n"),
         table.concat(util.list(target:get("linkdirs")), "\n"),
         table.concat(util.list(target:get("syslinks")), "\n"),
         native.link_identity(target),
     }
-    depend.on_changed(callback, {
+    local completion = path.join(util.state_dir(target), backend .. ".complete")
+    local signature = tostring(hash.strhash64(table.concat(values, "\n")))
+    local completed_signature = os.isfile(completion) and
+        (io.readfile(completion) or ""):gsub("[\r\n]+$", "") or ""
+    depend.on_changed(function()
+        os.rm(completion)
+        local result = callback()
+        mark_packages_complete(graph)
+        io.writefile(completion, signature .. "\n")
+        return result
+    end, {
         dependfile = target:dependfile(marker),
         files = backend_inputs(target, graph),
         values = values,
-        changed = target:is_rebuilt() or not backend_ready(target, graph, backend),
+        changed = target:is_rebuilt() or not backend_ready(target, graph, backend) or
+            completed_signature ~= signature,
     })
 end
 

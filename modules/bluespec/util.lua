@@ -185,6 +185,41 @@ function simdir(target)
     return backend_dir(target, "simdir")
 end
 
+function artifact_marker(artifact)
+    return artifact .. ".bluespec-complete"
+end
+
+local function artifact_stamp(artifact)
+    if not os.isfile(artifact) then
+        return nil
+    end
+    return tostring(os.mtime(artifact) or 0) .. ":" .. tostring(os.filesize(artifact) or 0)
+end
+
+function artifact_complete(artifact)
+    local stamp = artifact_stamp(artifact)
+    if not stamp then
+        return false
+    end
+    local marker = artifact_marker(artifact)
+    if not os.isfile(marker) then
+        return false
+    end
+    return (io.readfile(marker) or ""):gsub("[\r\n]+$", "") == stamp
+end
+
+function mark_artifact_complete(artifact)
+    local stamp = artifact_stamp(artifact)
+    if not stamp then
+        raise("cannot mark missing Bluespec artifact complete: %s", artifact)
+    end
+    io.writefile(artifact_marker(artifact), stamp .. "\n")
+end
+
+function invalidate_artifact(artifact)
+    os.rm(artifact_marker(artifact))
+end
+
 function verilog_filelist(target)
     local filelist = target:targetfile()
     if not filelist then
