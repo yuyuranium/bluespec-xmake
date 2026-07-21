@@ -79,7 +79,7 @@ interp_add_scopeapis({
     }
 })
 
-local function define_rule(name, backend, default_kind, needs_top)
+local function define_rule(name, backend, required_kind, needs_top)
     rule(name)
         set_extensions(".bsv")
 
@@ -92,12 +92,12 @@ local function define_rule(name, backend, default_kind, needs_top)
                 target:add("files", root, {rules = name})
                 target:data_set("bluespec.root_added", true)
             end
+            target:set("kind", required_kind)
             if backend == "verilog" then
                 -- A phony target has no targetfile() in Xmake.  Model the
                 -- deterministic filelist as this custom-built target's
                 -- primary artifact so ordinary dependency consumers can use
                 -- dep:targetfile() without knowing the internal RTL layout.
-                target:set("kind", "binary")
                 if not target:get("targetdir") then
                     local targetdir = path.join(config.builddir(), "Verilog")
                     local namespace = target:namespace()
@@ -110,8 +110,6 @@ local function define_rule(name, backend, default_kind, needs_top)
                 if not target:get("filename") then
                     target:set("filename", target:name() .. ".f")
                 end
-            elseif default_kind and target:kind() == "binary" and backend ~= "bluesim" then
-                target:set("kind", default_kind)
             end
             if needs_top then
                 util.top(target, true)
@@ -167,6 +165,6 @@ end
 
 define_rule("bluespec.library", "bluespec.library", "phony", false)
 define_rule("bluespec.check", "bluespec.check", "phony", false)
-define_rule("bluespec.bluesim", "bluesim", nil, true)
-define_rule("bluespec.verilog", "verilog", "phony", true)
+define_rule("bluespec.bluesim", "bluesim", "binary", true)
+define_rule("bluespec.verilog", "verilog", "binary", true)
 define_rule("bluespec.systemc", "systemc", "static", true)

@@ -655,6 +655,21 @@ local function test_cxx_driver(root, workroot, run)
     assert_bluespec_cache_hit(changed_cached, "selected CXX B cache hit")
 end
 
+local function test_kind_ownership(root, workroot, run)
+    local projectdir = copy_case(root, workroot, "kind_ownership")
+    local output = run(projectdir, {"config", "-c"}, {context = "Bluespec rule kind ownership"})
+    for _, item in ipairs({
+        {"library", "phony"},
+        {"check", "phony"},
+        {"bluesim", "binary"},
+        {"verilog", "binary"},
+        {"systemc", "static"},
+    }) do
+        assert_contains(output, "BLUESPEC_KIND_" .. item[1] .. "=" .. item[2],
+            "Bluespec rule kind ownership " .. item[1])
+    end
+end
+
 local function test_native_bdpi_builddir(root, workroot, run)
     local projectdir = copy_case(root, workroot, "native_bdpi")
     configure(run, projectdir)
@@ -900,6 +915,7 @@ function main()
         {"Bluesim/Verilog backends", function() test_backends(root, workroot, run) end},
         {"target CXX selection/cache identity", function() test_cxx_driver(root, workroot, run) end},
         {"BSC native toolchain identity", function() test_bsc_native_toolchain(root, workroot, run) end},
+        {"Bluespec rule kind ownership", function() test_kind_ownership(root, workroot, run) end},
         {"native BDPI/builddir isolation", function() test_native_bdpi_builddir(root, workroot, run) end},
         {"cycle diagnostic", function() test_cycle(root) end},
         {"duplicate provider", function()

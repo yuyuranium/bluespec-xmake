@@ -41,7 +41,6 @@ target("check")
     add_deps("lib")
 
 target("sim")
-    set_kind("binary")
     add_rules("bluespec.bluesim")
     set_bsc_root("src/Top.bsv")
     set_bsc_top("mkTop")
@@ -64,6 +63,13 @@ target("rtl_consumer")
 The other backend rules are `bluespec.verilog` and `bluespec.systemc`.
 Backend targets require `set_bsc_top`; every buildable target requires exactly
 one `set_bsc_root`.
+
+Bluespec rules own the Xmake target kind and set it during `on_load`: library
+and check targets are `phony`, Bluesim and Verilog targets are `binary`, and
+SystemC targets are `static`.  Consumers should not call `set_kind()` on these
+targets; an explicitly conflicting kind is replaced by the rule.  Native and
+BDPI targets remain ordinary Xmake targets and keep their consumer-selected
+`static`, `shared`, or `binary` kind.
 
 The complete target-scope API is `set_bsc_root`, `set_bsc_top`,
 `add_bsc_package_dirs`, `add_bsc_defines`, `add_bsc_options`, and

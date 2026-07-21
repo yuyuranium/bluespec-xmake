@@ -1,12 +1,10 @@
 target("relative", function()
-    set_kind("phony")
     add_rules("bluespec.check")
     set_bsc_root("Root.bsv")
     add_bsc_package_dirs("packages", {public = true})
 end)
 
 target("absolute", function()
-    set_kind("phony")
     add_rules("bluespec.check")
     set_bsc_root(path.join(os.scriptdir(), "Root.bsv"))
     add_bsc_package_dirs(path.join(os.scriptdir(), "packages"), {public = true})

@@ -13,7 +13,6 @@ target("golden")
     add_deps("golden_helper")
 
 target("native_bdpi")
-    set_kind("binary")
     set_default(false)
     add_rules("bluespec.bluesim")
     set_bsc_root("src/NativeBDPI.bsv")

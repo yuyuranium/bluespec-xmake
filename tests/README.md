@@ -14,6 +14,7 @@ invalidation/propagation, Bluesim execution/output placement,
 direct/transitive static BDPI dependencies, builddir graph isolation,
 target-selected C++ driver pinning and backend invalidation when that driver
 changes (including protection from an unrelated ambient `CXX`),
+rule-owned target kinds and conflicting `set_kind()` recovery,
 deterministic Verilog filelists exposed through standard `targetfile()`,
 downstream filelist invalidation, Verilog builddir relocation, cycles,
 duplicate providers, and unexported packages.  It does not require a

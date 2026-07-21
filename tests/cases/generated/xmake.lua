@@ -50,7 +50,6 @@ target("generator")
     end)
 
 target("generated")
-    set_kind("phony")
     add_rules("bluespec.library")
     set_bsc_root("build/generated/Generated.bsv")
     add_bsc_package_dirs("build/generated", {public = true})

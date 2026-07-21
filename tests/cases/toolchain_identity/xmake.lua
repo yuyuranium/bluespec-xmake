@@ -7,7 +7,6 @@ target("toolchain_native")
     add_files("src/native/toolchain.cpp")
 
 target("toolchain_sim")
-    set_kind("binary")
     set_default(false)
     add_rules("bluespec.bluesim")
     set_bsc_root("src/ToolchainTop.bsv")
