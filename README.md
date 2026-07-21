@@ -103,8 +103,37 @@ the scanner update import edges in the same invocation while keeping unchanged
 builds quiet.  `tests/cases/generated` is a complete example.
 
 Each package compile is an ordinary Xmake job and follows Xmake's global `-j`
-setting.  On memory-constrained machines, select a lower job count with
-`xmake -j <jobs>`; there is currently no separate BSC job-pool setting.
+setting.  Backend elaboration additionally uses a project-wide resource pool,
+shared by all Bluesim, Verilog, and SystemC targets in the invocation.  The
+configuration options are:
+
+- `--bluespec_backend_jobs=N`: maximum simultaneous backend transactions;
+  defaults to `1`.  Use `0` to inherit only the global `-j` limit.
+- `--bluespec_bsc_jobs=N`: optional maximum simultaneous BSC processes across
+  package and backend jobs; defaults to `0` (disabled).
+- `--bluespec_trace_bsc=y`: print the target/job/phase, execution identity,
+  full indexed argv, bdir/search/provider/output paths, and start/end timing
+  for each BSC process.
+
+Configure persistent limits in the ordinary Xmake configuration, for example:
+
+```sh
+xmake f --bluespec_backend_jobs=1 --bluespec_bsc_jobs=2
+xmake -j 12 -a
+```
+
+The effective concurrency never exceeds Xmake's `-j`: resource pools only
+reduce the number of ready jobs that enter BSC.  A backend slot covers the
+whole backend transaction, including its generated model/link phases, and is
+acquired only after incremental checking finds real work.  Package jobs remain
+parallel subject to their import DAG and the optional all-BSC cap.
+
+Xmake 3.0.4's `os.vrunv()` API does not expose its child PID.  Trace output
+marks this explicitly and exports `BLUESPEC_XMAKE_TARGET`,
+`BLUESPEC_XMAKE_JOB`, `BLUESPEC_XMAKE_PHASE`, and the unique
+`BLUESPEC_XMAKE_INVOCATION` into the BSC environment, allowing an OS process
+observer to correlate the actual PID without adding a wrapper executable or
+changing BSC scheduling.
 
 ## Artifacts and incremental state
 

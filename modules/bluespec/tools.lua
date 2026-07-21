@@ -1,4 +1,6 @@
 local util = import("bluespec.util")
+local config = import("core.project.config")
+local resources = import("bluespec.resources")
 
 local tool_cache = {}
 
@@ -69,6 +71,91 @@ local function run_quiet(program, args, options)
     return stdout, stderr
 end
 
+local function trace_enabled()
+    local value = config.get("bluespec_trace_bsc")
+    return value == true or value == "true" or value == "yes" or value == "y" or value == "1"
+end
+
+local function argument_value(args, name)
+    for index, argument in ipairs(args or {}) do
+        if argument == name then
+            return args[index + 1]
+        end
+    end
+end
+
+local function trace_paths(graph)
+    local providers = {}
+    for name, provider in pairs(graph and graph.providers or {}) do
+        if provider.bo then
+            table.insert(providers, name .. "=" .. path.normalize(path.absolute(provider.bo)))
+        end
+    end
+    table.sort(providers)
+    return providers
+end
+
+local function trace_invocation(target, program, args, envs, opt)
+    opt = opt or {}
+    local graph = opt.graph
+    local identity_parts = {
+        "bsc-invocation-v1",
+        target:fullname(),
+        opt.job or "",
+        opt.phase or "",
+        program,
+        identity(),
+        execution_identity(target),
+    }
+    for _, argument in ipairs(args or {}) do
+        table.insert(identity_parts, tostring(argument))
+    end
+    local invocation = tostring(hash.strhash64(table.concat(identity_parts, "\n")))
+    envs.BLUESPEC_XMAKE_INVOCATION = invocation
+    local started_wall = os.date("%Y-%m-%dT%H:%M:%S%z")
+    local started_clock = os.mclock()
+    -- Xmake 3.0.4 does not expose the child PID from os.vrunv(). Keep the
+    -- native execution path (and therefore scheduling behaviour) unchanged;
+    -- the invocation id is also exported to the child environment so an OS
+    -- process observer can correlate a PID without a wrapper runtime.
+    print("BSC_TRACE START target=%s job=%s phase=%s pid=not-exposed-by-xmake wall=%s monotonic_ms=%s invocation=%s",
+        target:fullname(), opt.job or "", opt.phase or "", started_wall,
+        tostring(started_clock), invocation)
+    print("BSC_TRACE PROGRAM %s", program)
+    print("BSC_TRACE ENV CC=%s CXX=%s BLUESPECDIR=%s", envs.CC, envs.CXX, envs.BLUESPECDIR)
+    print("BSC_TRACE PATH bdir=%s search=%s output=%s targetfile=%s",
+        tostring(argument_value(args, "-bdir") or ""),
+        tostring(argument_value(args, "-p") or ""),
+        tostring(graph and graph.output_dir or ""),
+        tostring(target:targetfile() and path.absolute(target:targetfile()) or ""))
+    for _, provider in ipairs(trace_paths(graph)) do
+        print("BSC_TRACE PROVIDER %s", provider)
+    end
+    for index, argument in ipairs(args or {}) do
+        print("BSC_TRACE ARGV[%d]=%s", index, tostring(argument))
+    end
+    local succeeded = false
+    local errors
+    try {
+        function()
+            os.vrunv(program, args, {envs = envs})
+            succeeded = true
+        end,
+        catch {
+            function(run_errors)
+                errors = run_errors
+            end,
+        },
+    }
+    print("BSC_TRACE END target=%s job=%s phase=%s pid=not-exposed-by-xmake wall=%s elapsed_ms=%s status=%s invocation=%s",
+        target:fullname(), opt.job or "", opt.phase or "",
+        os.date("%Y-%m-%dT%H:%M:%S%z"), tostring(os.mclock() - started_clock),
+        succeeded and "0" or "failed", invocation)
+    if not succeeded then
+        raise(errors or "BSC invocation failed")
+    end
+end
+
 local function raise_bsc_state_error(target, errors)
     errors = tostring(errors or "")
     if target and errors:find("BinData.getB: unexpected end of byte stream", 1, true) then
@@ -88,15 +175,20 @@ function tools()
         if not bsc or not bluetcl then
             raise("bluespec-xmake requires both bsc and bluetcl in PATH; use shell.nix or set PATH")
         end
-        tool_cache.bsc = bsc
-        tool_cache.bluetcl = bluetcl
         local bscdir = os.getenv("BLUESPECDIR")
         if not bscdir or bscdir == "" then
-            bscdir = path.join(path.directory(tool_cache.bsc), "..", "lib")
+            bscdir = path.join(path.directory(bsc), "..", "lib")
         end
-        tool_cache.bluespecdir = path.absolute(bscdir)
-        local version, _ = run_quiet(tool_cache.bsc, {"-v"})
-        tool_cache.version = (version or "unknown"):gsub("\r", ""):gsub("\n+$", "")
+        local version, _ = run_quiet(bsc, {"-v"})
+        -- `bsc -v` yields while cross-target scan jobs keep running. Publish
+        -- the cache only after every field is ready so sibling coroutines
+        -- cannot fingerprint a half-initialized BSC identity.
+        tool_cache = {
+            bsc = bsc,
+            bluetcl = bluetcl,
+            bluespecdir = path.absolute(bscdir),
+            version = (version or "unknown"):gsub("\r", ""):gsub("\n+$", ""),
+        }
     end
     return tool_cache
 end
@@ -274,13 +366,23 @@ function package_args(target, graph, package, backend)
     return toolset.bsc, args
 end
 
-function run_bsc(target, args)
+function run_bsc(target, args, opt)
     local toolset = tools()
     local envs = execution_environment(target)
+    opt = opt or {}
+    envs.BLUESPEC_XMAKE_TARGET = target:fullname()
+    envs.BLUESPEC_XMAKE_JOB = opt.job or ""
+    envs.BLUESPEC_XMAKE_PHASE = opt.phase or ""
     local errors
     local succeeded = try {
         function()
-            os.vrunv(toolset.bsc, args, {envs = envs})
+            resources.with_bsc(function()
+                if trace_enabled() then
+                    trace_invocation(target, toolset.bsc, args, envs, opt)
+                else
+                    os.vrunv(toolset.bsc, args, {envs = envs})
+                end
+            end)
             return true
         end,
         catch {

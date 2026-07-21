@@ -908,6 +908,222 @@ local function test_bsc_native_toolchain(root, workroot, run)
     }), "alternate toolchain cache hit")
 end
 
+local function fake_bsc_events(logfile, context)
+    local events = {}
+    for line in (io.readfile(logfile) or ""):gmatch("[^\r\n]+") do
+        local event = {}
+        for name, value in line:gmatch("([%w_]+)=([^ ]*)") do
+            event[name] = value
+        end
+        event.time_us = tonumber(event.time_us)
+        event.status = tonumber(event.status)
+        if not event.event or not event.time_us or not event.kind or not event.target then
+            raise("%s: malformed fake BSC event: %s", context, line)
+        end
+        table.insert(events, event)
+    end
+    table.sort(events, function(left, right)
+        if left.time_us == right.time_us then
+            return left.event == "end" and right.event ~= "end"
+        end
+        return left.time_us < right.time_us
+    end)
+    return events
+end
+
+local function analyze_fake_bsc(logfile, context, opt)
+    opt = opt or {}
+    local active = 0
+    local active_backend = 0
+    local maximum = 0
+    local maximum_backend = 0
+    local active_by_target = {}
+    local starts = {}
+    local events = fake_bsc_events(logfile, context)
+    for _, event in ipairs(events) do
+        local key = table.concat({event.target, event.kind, event.phase or ""}, "|")
+        if event.event == "start" then
+            active = active + 1
+            maximum = math.max(maximum, active)
+            if event.kind == "backend" then
+                active_backend = active_backend + 1
+                maximum_backend = math.max(maximum_backend, active_backend)
+            end
+            local target_active = active_by_target[event.target] or {}
+            if event.kind == "backend" and (target_active.package or 0) > 0 then
+                raise("%s: target(%s) backend overlapped its package compile", context, event.target)
+            elseif event.kind == "package" and (target_active.backend or 0) > 0 then
+                raise("%s: target(%s) package compile overlapped its backend", context, event.target)
+            end
+            target_active[event.kind] = (target_active[event.kind] or 0) + 1
+            active_by_target[event.target] = target_active
+            starts[key] = (starts[key] or 0) + 1
+        elseif event.event == "end" then
+            active = active - 1
+            if event.kind == "backend" then
+                active_backend = active_backend - 1
+            end
+            local target_active = active_by_target[event.target] or {}
+            target_active[event.kind] = (target_active[event.kind] or 0) - 1
+            active_by_target[event.target] = target_active
+        else
+            raise("%s: unknown fake BSC event %s", context, event.event)
+        end
+        if active < 0 or active_backend < 0 then
+            raise("%s: unmatched fake BSC end event", context)
+        end
+    end
+    if not opt.allow_incomplete and (active ~= 0 or active_backend ~= 0) then
+        raise("%s: fake BSC process did not record a matching end event", context)
+    end
+    return {events = events, starts = starts, maximum = maximum, maximum_backend = maximum_backend}
+end
+
+local function assert_fake_paths(analysis, builddir, context)
+    local root = path.normalize(path.absolute(builddir))
+    for _, event in ipairs(analysis.events) do
+        if event.event == "start" then
+            for _, pathname in ipairs({event.bdir, event.vdir}) do
+                if pathname and pathname ~= "" then
+                    pathname = path.normalize(path.absolute(pathname))
+                    if pathname ~= root and pathname:sub(1, #root + 1) ~= root .. "/" then
+                        raise("%s: BSC path escaped builddir %s: %s", context, root, pathname)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function test_bsc_concurrency(root, workroot, run)
+    local fake_project = path.join(root, "tests", "fake_bsc")
+    local fake_build = path.join(workroot, "fake-bsc-build")
+    run(fake_project, {"config", "-c", "-o", fake_build}, {context = "configure fake BSC"})
+    run(fake_project, {"build", "bsc"}, {context = "build fake BSC"})
+    local fake_bsc = path.join(fake_build, "bin", os.host() == "windows" and "bsc.exe" or "bsc")
+    if not os.isexec(fake_bsc) then
+        raise("fake BSC build did not produce executable %s", fake_bsc)
+    end
+
+    local projectdir = copy_case(root, workroot, "concurrency")
+    local fake_path = path.joinenv({path.directory(fake_bsc), os.getenv("PATH") or ""})
+    local function environment(logfile, extra)
+        local envs = {
+            PATH = fake_path,
+            BLUESPEC_FAKE_BSC_LOG = logfile,
+            -- Xmake 3.0.4 polls short-lived child processes coarsely. Keep
+            -- fake backends alive long enough for ready jobs to overlap.
+            BLUESPEC_FAKE_BSC_PACKAGE_MS = "40",
+            BLUESPEC_FAKE_BSC_BACKEND_MS = "1500",
+        }
+        for name, value in pairs(extra or {}) do
+            envs[name] = value
+        end
+        return envs
+    end
+    local function configure_case(builddir, backend_jobs, bsc_jobs, logfile, trace)
+        local arguments = {
+            "config", "-c", "-o", builddir,
+            "--bluespec_backend_jobs=" .. tostring(backend_jobs),
+            "--bluespec_bsc_jobs=" .. tostring(bsc_jobs),
+            "--bluespec_trace_bsc=" .. (trace and "y" or "n"),
+        }
+        run(projectdir, arguments, {context = "configure fake BSC concurrency", envs = environment(logfile)})
+    end
+    local function build_all(logfile, builddir, context, opt)
+        opt = opt or {}
+        io.writefile(logfile, "")
+        local output = run(projectdir, {"build", "-a", "-j", tostring(opt.jobs or 8)}, {
+            context = context,
+            fail = opt.fail,
+            envs = environment(logfile, opt.envs),
+        })
+        local analysis = analyze_fake_bsc(logfile, context, {allow_incomplete = opt.allow_incomplete})
+        assert_fake_paths(analysis, builddir, context)
+        return output, analysis
+    end
+
+    local capped_build = path.join(projectdir, "build-backend-two")
+    local capped_log = path.join(workroot, "fake-bsc-backend-two.log")
+    configure_case(capped_build, 2, 0, capped_log, true)
+    local traced, capped = build_all(capped_log, capped_build, "cross-target backend cap")
+    if capped.maximum_backend ~= 2 then
+        raise("cross-target backend cap: expected maximum backend concurrency 2, got %d",
+            capped.maximum_backend)
+    end
+    for index = 1, 4 do
+        local target = "rtl" .. index
+        local package_key = table.concat({target, "package", "package"}, "|")
+        local backend_key = table.concat({target, "backend", "verilog-generate"}, "|")
+        if capped.starts[package_key] ~= 1 or capped.starts[backend_key] ~= 1 then
+            raise("cross-target backend cap: target(%s) was not scheduled exactly once (package=%s backend=%s)",
+                target, tostring(capped.starts[package_key]), tostring(capped.starts[backend_key]))
+        end
+    end
+    assert_contains(traced, "BSC_TRACE START target=rtl", "BSC trace target/job")
+    assert_contains(traced, "pid=", "BSC trace PID")
+    assert_contains(traced, "pid=not-exposed-by-xmake", "BSC trace PID capability marker")
+    assert_contains(traced, "BSC_TRACE ARGV[", "BSC trace complete argv")
+    assert_contains(traced, "BSC_TRACE PATH bdir=", "BSC trace artifact paths")
+
+    io.writefile(capped_log, "")
+    local unchanged = run(projectdir, {"build", "-a", "-j", "8"}, {
+        context = "cross-target unchanged cache hit",
+        envs = environment(capped_log),
+    })
+    assert_bluespec_cache_hit(unchanged, "cross-target unchanged cache hit")
+    if (io.readfile(capped_log) or "") ~= "" then
+        raise("cross-target unchanged cache hit unexpectedly invoked BSC")
+    end
+
+    local total_build = path.join(projectdir, "build-total-two")
+    local total_log = path.join(workroot, "fake-bsc-total-two.log")
+    configure_case(total_build, 4, 2, total_log, false)
+    local _, total = build_all(total_log, total_build, "project-wide BSC cap")
+    if total.maximum ~= 2 or total.maximum_backend > 2 then
+        raise("project-wide BSC cap: expected total concurrency 2, got total=%d backend=%d",
+            total.maximum, total.maximum_backend)
+    end
+
+    local serial_build = path.join(projectdir, "build-serial")
+    local serial_log = path.join(workroot, "fake-bsc-serial.log")
+    configure_case(serial_build, 4, 4, serial_log, false)
+    local _, serial = build_all(serial_log, serial_build, "global -j1 interaction", {jobs = 1})
+    if serial.maximum ~= 1 or serial.maximum_backend ~= 1 then
+        raise("global -j1 interaction: expected concurrency 1, got total=%d backend=%d",
+            serial.maximum, serial.maximum_backend)
+    end
+
+    local failure_build = path.join(projectdir, "build-failure")
+    local failure_log = path.join(workroot, "fake-bsc-failure.log")
+    configure_case(failure_build, 2, 0, failure_log, false)
+    build_all(failure_log, failure_build, "backend failure", {
+        fail = true,
+        allow_incomplete = true,
+        envs = {BLUESPEC_FAKE_BSC_FAIL_TOP = "mkTop3"},
+    })
+    local failed_filelist = path.join(failure_build, "Verilog", "rtl3.f")
+    if os.isfile(failed_filelist) then
+        raise("backend failure left a public filelist that could be mistaken for completion")
+    end
+    local completed = {}
+    for index = 1, 4 do
+        local filelist = path.join(failure_build, "Verilog", "rtl" .. index .. ".f")
+        if os.isfile(filelist) then
+            completed["rtl" .. index] = true
+        end
+    end
+    local _, retried = build_all(failure_log, failure_build, "backend failure retry")
+    if retried.starts["rtl3|backend|verilog-generate"] ~= 1 then
+        raise("backend failure retry did not run the failed backend exactly once")
+    end
+    for target in pairs(completed) do
+        if retried.starts[target .. "|backend|verilog-generate"] then
+            raise("backend failure retry rebuilt already-completed target(%s)", target)
+        end
+    end
+end
+
 local function test_cycle(root)
     local parser = import("bluespec.parser")
     local projectdir = os.projectdir()
@@ -957,6 +1173,7 @@ function main()
         {"Bluesim/Verilog backends", function() test_backends(root, workroot, run) end},
         {"target CXX selection/cache identity", function() test_cxx_driver(root, workroot, run) end},
         {"BSC native toolchain identity", function() test_bsc_native_toolchain(root, workroot, run) end},
+        {"project-wide BSC/backend concurrency", function() test_bsc_concurrency(root, workroot, run) end},
         {"Bluespec rule kind ownership", function() test_kind_ownership(root, workroot, run) end},
         {"native BDPI/builddir isolation", function() test_native_bdpi_builddir(root, workroot, run) end},
         {"cycle diagnostic", function() test_cycle(root) end},

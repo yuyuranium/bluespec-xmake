@@ -2,6 +2,7 @@ local util = import("bluespec.util")
 local tools = import("bluespec.tools")
 local graphmod = import("bluespec.graph")
 local native = import("bluespec.native")
+local resources = import("bluespec.resources")
 local compiler = import("core.tool.compiler")
 local linker = import("core.tool.linker")
 local depend = import("core.project.depend")
@@ -161,7 +162,11 @@ local function schedule_packages(target, jobgraph, graph, backend)
                         end
                         os.mkdir(graph.output_dir)
                         util.invalidate_artifact(package.bo)
-                        tools.run_bsc(target, args)
+                        tools.run_bsc(target, args, {
+                            graph = graph,
+                            job = package_job(target, name),
+                            phase = "package",
+                        })
                         util.mark_artifact_complete(package.bo)
                         return {}
                     end, {
@@ -276,7 +281,11 @@ local function build_systemc(target, graph)
     table.insert(elaboration_args, assert(graph.top, "Bluespec backend requires a top module"))
     table.insert(elaboration_args, "-u")
     table.insert(elaboration_args, graph.root)
-    tools.run_bsc(target, elaboration_args)
+    tools.run_bsc(target, elaboration_args, {
+        graph = graph,
+        job = backend_job(target, "systemc"),
+        phase = "systemc-elaborate",
+    })
     local program, args = backend_args(target, graph, "systemc", "generate")
     local bsc_output = path.join(util.backend_dir(target, "systemc"), ".bsc-systemc-model")
     table.insert(args, "-o")
@@ -289,7 +298,11 @@ local function build_systemc(target, graph)
         table.insert(args, "-Xc++")
         table.insert(args, "-I" .. includedir)
     end
-    tools.run_bsc(target, args)
+    tools.run_bsc(target, args, {
+        graph = graph,
+        job = backend_job(target, "systemc"),
+        phase = "systemc-generate",
+    })
     local headers = {}
     for _, pattern in ipairs({"*.h", "*.hh", "*.hpp", "*.hxx"}) do
         for _, header in ipairs(os.files(path.join(systemc_dir, pattern))) do
@@ -342,7 +355,11 @@ local function build_verilog(target, graph)
     os.rm(rtl_dir)
     os.mkdir(rtl_dir)
     local program, args = backend_args(target, graph, "verilog", "generate")
-    tools.run_bsc(target, args)
+    tools.run_bsc(target, args, {
+        graph = graph,
+        job = backend_job(target, "verilog"),
+        phase = "verilog-generate",
+    })
     local files = os.files(path.join(rtl_dir, "*.v"))
     table.sort(files)
     if #files == 0 then
@@ -361,10 +378,18 @@ local function build_bluesim(target, graph)
     os.rm(sim_dir)
     os.mkdir(sim_dir)
     local program, args = backend_args(target, graph, "bluesim", "generate")
-    tools.run_bsc(target, args)
+    tools.run_bsc(target, args, {
+        graph = graph,
+        job = backend_job(target, "bluesim"),
+        phase = "bluesim-generate",
+    })
     local link_program, link_args = backend_args(target, graph, "bluesim", "link")
     os.mkdir(path.directory(path.absolute(target:targetfile())))
-    tools.run_bsc(target, link_args)
+    tools.run_bsc(target, link_args, {
+        graph = graph,
+        job = backend_job(target, "bluesim"),
+        phase = "bluesim-link",
+    })
 end
 
 local function reset_elaboration_artifacts(graph)
@@ -468,11 +493,15 @@ local function backend_depend(target, graph, backend, callback)
     local completed_signature = os.isfile(completion) and
         (io.readfile(completion) or ""):gsub("[\r\n]+$", "") or ""
     depend.on_changed(function()
-        os.rm(completion)
-        local result = callback()
-        mark_packages_complete(graph)
-        io.writefile(completion, signature .. "\n")
-        return result
+        return resources.with_backend(function()
+            -- Do not invalidate completion or target-private elaboration state
+            -- until this backend owns the project-wide resource slot.
+            os.rm(completion)
+            local result = callback()
+            mark_packages_complete(graph)
+            io.writefile(completion, signature .. "\n")
+            return result
+        end)
     end, {
         dependfile = target:dependfile(marker),
         files = backend_inputs(target, graph),

@@ -70,7 +70,15 @@ function fingerprint(target, inputs, config)
         table.insert(parts, pathname .. "=" .. stat(pathname))
     end
     table.sort(parts)
-    return tostring(hash.strhash64(table.concat(parts, "\n")))
+    local fingerprint_value = tostring(hash.strhash64(table.concat(parts, "\n")))
+    local trace = import("core.project.config").get("bluespec_trace_bsc")
+    if trace == true or trace == "true" or trace == "yes" or trace == "y" or trace == "1" then
+        print("BSC_GRAPH_FINGERPRINT target=%s value=%s", target:fullname(), fingerprint_value)
+        for index, part in ipairs(parts) do
+            print("BSC_GRAPH_INPUT target=%s part[%d]=%s", target:fullname(), index, part)
+        end
+    end
+    return fingerprint_value
 end
 
 function changed(target, old_graph, inputs, config)

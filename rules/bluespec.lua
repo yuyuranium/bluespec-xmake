@@ -2,6 +2,21 @@
 
 add_moduledirs(path.join(os.scriptdir(), "../modules"))
 
+option("bluespec_backend_jobs")
+    set_default(1)
+    set_showmenu(true)
+    set_description("Maximum concurrent Bluespec backend elaborations (0 inherits Xmake -j)")
+
+option("bluespec_bsc_jobs")
+    set_default(0)
+    set_showmenu(true)
+    set_description("Maximum concurrent BSC processes, including package compiles (0 inherits Xmake -j)")
+
+option("bluespec_trace_bsc")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Trace BSC job identity, argv, paths, PID capability and timing")
+
 -- Xmake's custom description API turns these into target-scope helpers while
 -- keeping the canonical low-level representation in target values.
 local function single_value_api(name)

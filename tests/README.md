@@ -18,7 +18,10 @@ changes (including protection from an unrelated ambient `CXX`),
 rule-owned target kinds and conflicting `set_kind()` recovery,
 deterministic Verilog filelists exposed through standard `targetfile()`,
 downstream filelist invalidation, Verilog builddir relocation, cycles,
-duplicate providers, and unexported packages.  It does not require a
+duplicate providers, and unexported packages.  A native fake-BSC fixture also
+checks project-wide cross-target backend/all-BSC caps, `-j1` interaction,
+same-target package/backend ordering, exactly-once all-target scheduling,
+failure retry/completion state, and unchanged cache hits.  It does not require a
 shell/Python test script or produce a public manifest.
 
 Generated BSV that feeds dependency scanning must be produced by a generator
