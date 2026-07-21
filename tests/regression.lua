@@ -456,6 +456,47 @@ local function test_defines(root, workroot, run)
     end
 end
 
+local function test_option_groups(root, workroot, run)
+    local projectdir = copy_case(root, workroot, "options")
+    configure(run, projectdir)
+
+    local first = run(projectdir, {"build", "-v", "consumer"}, {context = "multi-token BSC options"})
+    assert_contains(first, "scanning Bluespec option-lib", "multi-token BSC options")
+    assert_contains(first, "scanning Bluespec consumer", "multi-token BSC options")
+    assert_contains(first, "compiling Bluespec package Lib", "multi-token BSC options")
+    assert_contains(first, "compiling Bluespec package Consumer", "multi-token BSC options")
+    assert_contains(first,
+        "-steps-warn-interval 1000000 -steps-max-intervals 10000000 +RTS -K1G -RTS -check-assert -suppress-warnings G0020:S0077:S0080",
+        "multi-token BSC option argv order and propagation")
+
+    assert_bluespec_cache_hit(run(projectdir, {"build", "consumer"}, {
+        context = "multi-token BSC options cache hit",
+    }), "multi-token BSC options cache hit")
+
+    local projectfile = path.join(projectdir, "xmake.lua")
+    local contents = io.readfile(projectfile) or ""
+    local changed, replacements = contents:gsub(
+        'add_bsc_options%("%-steps%-warn%-interval", "1000000"%)',
+        'add_bsc_options("-steps-warn-interval")\n    add_bsc_options("1000000")')
+    if replacements ~= 1 then
+        raise("multi-token BSC options: expected one option-group boundary to change, got %d", replacements)
+    end
+    os.sleep(1100)
+    io.writefile(projectfile, changed)
+    run(projectdir, {"config", "-c"}, {context = "multi-token option-group reconfigure"})
+    local group_changed = run(projectdir, {"build", "consumer"}, {
+        context = "multi-token option-group invalidation",
+    })
+    assert_contains(group_changed, "scanning Bluespec consumer", "multi-token option-group invalidation")
+    assert_contains(group_changed, "compiling Bluespec package Consumer",
+        "multi-token option-group invalidation")
+    assert_not_contains(group_changed, "compiling Bluespec package Lib",
+        "multi-token option-group invalidation")
+    assert_bluespec_cache_hit(run(projectdir, {"build", "consumer"}, {
+        context = "multi-token option-group cache hit",
+    }), "multi-token option-group cache hit")
+end
+
 local function test_backends(root, workroot, run)
     local projectdir = copy_case(root, workroot, "backends")
     configure(run, projectdir)
@@ -912,6 +953,7 @@ function main()
         {"incremental graph/cache", function() test_incremental(root, workroot, run) end},
         {"generated BSV", function() test_generated(root, workroot, run) end},
         {"valued/valueless defines", function() test_defines(root, workroot, run) end},
+        {"multi-token BSC option groups", function() test_option_groups(root, workroot, run) end},
         {"Bluesim/Verilog backends", function() test_backends(root, workroot, run) end},
         {"target CXX selection/cache identity", function() test_cxx_driver(root, workroot, run) end},
         {"BSC native toolchain identity", function() test_bsc_native_toolchain(root, workroot, run) end},

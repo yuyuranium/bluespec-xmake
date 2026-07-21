@@ -9,7 +9,8 @@ nix-shell --run 'xmake regression'
 The runner is implemented in Xmake Lua and uses isolated copies below
 `build/regression`.  It covers package-level reverse-dependency invalidation,
 dynamic import edge changes, dependency `.bo` reuse, generated BSV input/config
-invalidation and cache hits, valued/valueless defines and define
+invalidation and cache hits, valued/valueless defines, ordered multi-token BSC
+option groups with PUBLIC/INTERFACE propagation, and define
 invalidation/propagation, Bluesim execution/output placement,
 direct/transitive static BDPI dependencies, builddir graph isolation,
 target-selected C++ driver pinning and backend invalidation when that driver

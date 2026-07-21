@@ -1,0 +1,18 @@
+set_project("options")
+includes(path.join(os.getenv("BLUESPEC_XMAKE_ROOT"), "rules", "bluespec.lua"))
+
+target("option-lib")
+    add_rules("bluespec.library")
+    set_bsc_root("src/lib/Lib.bsv")
+    add_bsc_package_dirs("src/lib", {public = true})
+    add_bsc_options("-check-assert", {public = true})
+    add_bsc_options("-suppress-warnings", "G0020:S0077:S0080", {interface = true})
+
+target("consumer")
+    set_default(false)
+    add_rules("bluespec.check")
+    set_bsc_root("src/consumer/Consumer.bsv")
+    add_bsc_options("-steps-warn-interval", "1000000")
+    add_bsc_options("-steps-max-intervals", "10000000")
+    add_bsc_options("+RTS", "-K1G", "-RTS")
+    add_deps("option-lib")

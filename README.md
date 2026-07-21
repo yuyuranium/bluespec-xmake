@@ -86,6 +86,10 @@ rewritten as paths.
 Visibility follows dependency-to-consumer propagation: private values affect
 the declaring target, while public/interface package directories, defines,
 options, and link options are exported to consumers.
+Each `add_bsc_options(...)` invocation is retained as one ordered argv group,
+so a flag and its value (or an RTS sequence such as `+RTS`, `-K1G`, `-RTS`)
+remain adjacent through dependency propagation.  A one-token invocation keeps
+the existing single-token behavior.
 Native C/C++ targets can be attached with ordinary `add_deps()`; Bluesim link
 jobs force-load direct and transitive static dependencies into the shared model
 and build those archives as PIC where the platform requires it.  SystemC

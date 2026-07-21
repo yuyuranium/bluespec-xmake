@@ -53,6 +53,7 @@ local function package_depend_values(target, graph, name, package, program, args
     add_value(values, "output", package.bo)
     add_value(values, "toolchain", tools.identity())
     add_value(values, "execution-toolchain", tools.execution_identity(target))
+    add_value(values, "option-groups", util.option_groups_identity(graph.effective_option_groups))
     add_value(values, "program", program)
     for index, argument in ipairs(args or {}) do
         add_value(values, string.format("argv[%d]", index), argument)

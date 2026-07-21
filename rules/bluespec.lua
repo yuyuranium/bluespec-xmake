@@ -39,7 +39,18 @@ local function append_value(values, value)
     end
 end
 
-local function add_visibility_api(name, path_valued)
+local option_group_prefix = "__bluespec_option_group_v1__:"
+
+local function encode_option_group(values)
+    local encoded = option_group_prefix
+    for _, value in ipairs(values) do
+        value = tostring(value)
+        encoded = encoded .. tostring(#value) .. ":" .. value
+    end
+    return encoded
+end
+
+local function add_visibility_api(name, path_valued, grouped)
     return function(interp, ...)
         local arguments = {...}
         local options = {}
@@ -56,14 +67,28 @@ local function add_visibility_api(name, path_valued)
         if visibility ~= "private" and visibility ~= "public" and visibility ~= "interface" then
             raise("invalid Bluespec visibility %s (expected private, public, or interface)", visibility)
         end
-        for _, value in ipairs(values) do
-            if path_valued then
-                value = declaration_absolute(interp, value)
+        local storage_name = name .. "." .. visibility
+        if grouped then
+            local group = {}
+            for _, value in ipairs(values) do
+                if path_valued then
+                    value = declaration_absolute(interp, value)
+                end
+                table.insert(group, value)
             end
-            -- Store helpers in the same canonical namespace accepted by
-            -- set_values(), while retaining no separate public manifest.
-            local storage_name = name .. "." .. visibility
-            interp:api_call("add_values", storage_name, value)
+            -- Keep one add_bsc_options() invocation as one ordered group.
+            -- This lets option/value pairs and RTS groups survive dependency
+            -- propagation without exposing a manifest or parser runtime.
+            interp:api_call("add_values", storage_name, encode_option_group(group))
+        else
+            for _, value in ipairs(values) do
+                if path_valued then
+                    value = declaration_absolute(interp, value)
+                end
+                -- Store helpers in the same canonical namespace accepted by
+                -- set_values(), while retaining no separate public manifest.
+                interp:api_call("add_values", storage_name, value)
+            end
         end
     end
 end
@@ -74,7 +99,7 @@ interp_add_scopeapis({
         {"target.set_bsc_top", single_value_api("bluespec.top")},
         {"target.add_bsc_package_dirs", add_visibility_api("bluespec.package_dirs", true)},
         {"target.add_bsc_defines", add_visibility_api("bluespec.defines")},
-        {"target.add_bsc_options", add_visibility_api("bluespec.options")},
+        {"target.add_bsc_options", add_visibility_api("bluespec.options", false, true)},
         {"target.add_bsc_link_options", add_visibility_api("bluespec.link_options")},
     }
 })

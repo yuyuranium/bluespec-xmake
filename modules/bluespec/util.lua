@@ -129,6 +129,113 @@ function visibility_values(target, canonical, helper)
     return result
 end
 
+local function raw_visibility_values(target, canonical, helper)
+    local result = {private = {}, public = {}, interface = {}}
+    local function append_entries(destination, values)
+        if values == nil then
+            return
+        end
+        if type(values) == "table" and not table.is_dictionary(values) then
+            for _, value in ipairs(values) do
+                table.insert(destination, value)
+            end
+        else
+            table.insert(destination, values)
+        end
+    end
+    append_entries(result.private, target:values(canonical))
+    for _, visibility in ipairs({"private", "public", "interface"}) do
+        append_entries(result[visibility], target:values(canonical .. "." .. visibility))
+    end
+    append_entries(result.private, target:values(helper))
+    return result
+end
+
+local function option_group(value)
+    local prefix = "__bluespec_option_group_v1__:"
+    if type(value) == "string" and value:sub(1, #prefix) == prefix then
+        local result = {}
+        local offset = #prefix + 1
+        while offset <= #value do
+            local separator = value:find(":", offset, true)
+            if not separator then
+                raise("invalid encoded Bluespec option group")
+            end
+            local length = tonumber(value:sub(offset, separator - 1))
+            if not length or length < 0 then
+                raise("invalid encoded Bluespec option group length")
+            end
+            local first = separator + 1
+            local last = first + length - 1
+            if last > #value then
+                raise("truncated encoded Bluespec option group")
+            end
+            table.insert(result, value:sub(first, last))
+            offset = last + 1
+        end
+        return result
+    end
+    if type(value) == "table" then
+        if table.is_dictionary(value) then
+            local entries = value.values or value.items or value.options
+            if entries == nil then
+                entries = value.value or value.option
+            end
+            if entries ~= nil then
+                return list(entries)
+            end
+        else
+            return list(value)
+        end
+    end
+    return {tostring(value)}
+end
+
+-- Return ordered option groups for each visibility class. Structured groups
+-- come from add_bsc_options(); legacy scalar values remain one-token groups.
+function option_groups(target)
+    local raw = raw_visibility_values(target, "bluespec.options", "bsc_options")
+    local result = {private = {}, public = {}, interface = {}}
+    for _, visibility in ipairs({"private", "public", "interface"}) do
+        for _, value in ipairs(raw[visibility]) do
+            local group = option_group(value)
+            local normalized = {}
+            for _, option in ipairs(group) do
+                table.insert(normalized, tostring(option))
+            end
+            if #normalized > 0 then
+                table.insert(result[visibility], normalized)
+            end
+        end
+    end
+    return result
+end
+
+function flatten_option_groups(groups)
+    local result = {}
+    for _, group in ipairs(groups or {}) do
+        for _, option in ipairs(group or {}) do
+            table.insert(result, tostring(option))
+        end
+    end
+    return result
+end
+
+-- Encode group boundaries and token values without ambiguous delimiters so
+-- graph fingerprints track the exact structured option configuration.
+function option_groups_identity(groups)
+    local encoded = {}
+    for _, group in ipairs(groups or {}) do
+        local values = {}
+        for _, option in ipairs(group or {}) do
+            option = tostring(option)
+            table.insert(values, tostring(#option) .. ":" .. option)
+        end
+        table.insert(encoded, "[" .. table.concat(values, ",") .. "]")
+    end
+    return table.concat(encoded, "|")
+end
+
 function package_dirs(target)
     local dirs = visibility_values(target, "bluespec.package_dirs", "bsc_package_dirs")
     local root = canonical_root(target)
@@ -154,7 +261,12 @@ function defines(target)
 end
 
 function options(target)
-    return visibility_values(target, "bluespec.options", "bsc_options")
+    local groups = option_groups(target)
+    return {
+        private = flatten_option_groups(groups.private),
+        public = flatten_option_groups(groups.public),
+        interface = flatten_option_groups(groups.interface),
+    }
 end
 
 function link_options(target)

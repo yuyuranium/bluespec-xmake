@@ -28,10 +28,27 @@ local function append(dst, values)
     end
 end
 
+local function append_groups(dst, groups)
+    for _, group in ipairs(groups or {}) do
+        table.insert(dst, group)
+    end
+end
+
+local function graph_exported_option_groups(graph)
+    if graph.exported_option_groups then
+        return graph.exported_option_groups
+    end
+    local result = {}
+    for _, option in ipairs(graph.exported_options or {}) do
+        table.insert(result, {tostring(option)})
+    end
+    return result
+end
+
 local function own_config(target)
     local dirs = util.package_dirs(target)
     local defines = util.defines(target)
-    local options = util.options(target)
+    local options = util.option_groups(target)
     local link_options = util.link_options(target)
     return dirs, defines, options, link_options
 end
@@ -58,10 +75,10 @@ local function effective_config(target, deps)
     append(effective_defines, own_defines.private)
     append(effective_defines, own_defines.public)
     append(effective_defines, own_defines.interface)
-    local effective_options = {}
-    append(effective_options, own_options.private)
-    append(effective_options, own_options.public)
-    append(effective_options, own_options.interface)
+    local effective_option_groups = {}
+    append_groups(effective_option_groups, own_options.private)
+    append_groups(effective_option_groups, own_options.public)
+    append_groups(effective_option_groups, own_options.interface)
     local effective_link_options = {}
     append(effective_link_options, own_link_options.private)
     append(effective_link_options, own_link_options.public)
@@ -72,9 +89,9 @@ local function effective_config(target, deps)
     local exported_defines = {}
     append(exported_defines, own_defines.public)
     append(exported_defines, own_defines.interface)
-    local exported_options = {}
-    append(exported_options, own_options.public)
-    append(exported_options, own_options.interface)
+    local exported_option_groups = {}
+    append_groups(exported_option_groups, own_options.public)
+    append_groups(exported_option_groups, own_options.interface)
     local exported_link_options = {}
     append(exported_link_options, own_link_options.public)
     append(exported_link_options, own_link_options.interface)
@@ -112,11 +129,11 @@ local function effective_config(target, deps)
         append(scanner_dirs, graph.exported_dirs)
         append(dependency_exported_dirs, graph.exported_dirs)
         append(effective_defines, graph.exported_defines)
-        append(effective_options, graph.exported_options)
+        append_groups(effective_option_groups, graph_exported_option_groups(graph))
         append(effective_link_options, graph.exported_link_options)
         append(exported_dirs, graph.exported_dirs)
         append(exported_defines, graph.exported_defines)
-        append(exported_options, graph.exported_options)
+        append_groups(exported_option_groups, graph_exported_option_groups(graph))
         append(exported_link_options, graph.exported_link_options)
         table.insert(dep_contexts, item.target:fullname() .. "=" .. tostring(graph.fingerprint))
     end
@@ -127,11 +144,13 @@ local function effective_config(target, deps)
         search_dirs = util.unique_sorted(effective_dirs),
         scanner_dirs = util.unique_sorted(scanner_dirs),
         effective_defines = util.unique_sorted(effective_defines),
-        effective_options = util.unique_sorted(effective_options),
+        effective_option_groups = effective_option_groups,
+        effective_options = util.flatten_option_groups(effective_option_groups),
         effective_link_options = util.unique_sorted(effective_link_options),
         exported_dirs = util.unique_sorted(exported_dirs),
         exported_defines = util.unique_sorted(exported_defines),
-        exported_options = util.unique_sorted(exported_options),
+        exported_option_groups = exported_option_groups,
+        exported_options = util.flatten_option_groups(exported_option_groups),
         exported_link_options = util.unique_sorted(exported_link_options),
         dependency_exported_dirs = util.unique_sorted(dependency_exported_dirs),
         dep_contexts = util.sorted(dep_contexts),
@@ -214,6 +233,7 @@ local function config_items(target, config, old)
         table.concat(config.scanner_dirs, "\n"),
         table.concat(config.exported_dirs, "\n"),
         table.concat(config.effective_defines, "\n"),
+        util.option_groups_identity(config.effective_option_groups),
         table.concat(config.effective_options, "\n"),
         table.concat(config.effective_link_options, "\n"),
         table.concat(config.dep_contexts, "\n"),
@@ -331,13 +351,14 @@ local function finalize(target, parsed, config, deps)
         table.concat(config.scanner_dirs, "\n"),
         table.concat(config.exported_dirs, "\n"),
         table.concat(config.effective_defines, "\n"),
+        util.option_groups_identity(config.effective_option_groups),
         table.concat(config.effective_options, "\n"),
         table.concat(config.effective_link_options, "\n"),
         table.concat(config.dep_contexts, "\n"),
     })
 
     return {
-        schema = 6,
+        schema = 7,
         target = target:fullname(),
         root = parsed.root,
         root_name = parsed.root_name,
@@ -353,9 +374,11 @@ local function finalize(target, parsed, config, deps)
         scanner_dirs = config.scanner_dirs,
         exported_dirs = config.exported_dirs,
         effective_defines = config.effective_defines,
+        effective_option_groups = config.effective_option_groups,
         effective_options = config.effective_options,
         effective_link_options = config.effective_link_options,
         exported_defines = config.exported_defines,
+        exported_option_groups = config.exported_option_groups,
         exported_options = config.exported_options,
         exported_link_options = config.exported_link_options,
         dependency_exported_dirs = config.dependency_exported_dirs,
