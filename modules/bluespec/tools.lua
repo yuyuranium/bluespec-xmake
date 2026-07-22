@@ -202,6 +202,19 @@ function identity()
     return table.concat({toolset.bsc, toolset.bluetcl, toolset.bluespecdir, toolset.version}, "|")
 end
 
+function scanner_identity()
+    local toolset = tools()
+    return table.concat({
+        "bluespec-scanner-v1",
+        path.normalize(path.absolute(toolset.bsc)),
+        program_stamp(toolset.bsc),
+        path.normalize(path.absolute(toolset.bluetcl)),
+        program_stamp(toolset.bluetcl),
+        path.normalize(path.absolute(toolset.bluespecdir)),
+        toolset.version,
+    }, "|")
+end
+
 -- BSC invokes native compilers internally for Bluesim/SystemC.  Derive both
 -- its environment and its incremental identity from the target's compiler
 -- slots, never from the shared-library linker slot (`sh` can be link.exe).
@@ -260,8 +273,7 @@ function builtin_packages()
     return packages
 end
 
-function run_depend(target, root, package_dirs, defines, options)
-    local toolset = tools()
+function depend_search_dirs(package_dirs)
     local search = {}
     for _, dir in ipairs(util.list(package_dirs)) do
         table.insert(search, dir)
@@ -269,7 +281,13 @@ function run_depend(target, root, package_dirs, defines, options)
     for _, dir in ipairs(builtin_dirs()) do
         table.insert(search, dir)
     end
-    search = util.unique_sorted(search)
+    return util.unique_sorted(search)
+end
+
+function run_depend(target, root, package_dirs, defines, options, opt)
+    local toolset = tools()
+    local search = depend_search_dirs(package_dirs)
+    opt = opt or {}
 
     local commands = {
         "Bluetcl::flags reset",
@@ -302,7 +320,16 @@ function run_depend(target, root, package_dirs, defines, options)
     local output, errors
     local succeeded = try {
         function()
-            output, errors = run_quiet(toolset.bluetcl, {}, {stdin = input})
+            output, errors = resources.with_scan(function()
+                return run_quiet(toolset.bluetcl, {}, {
+                    stdin = input,
+                    envs = {
+                        BLUESPECDIR = toolset.bluespecdir,
+                        BLUESPEC_XMAKE_TARGET = target:fullname(),
+                        BLUESPEC_XMAKE_SCAN_IDENTITY = opt.identity or "",
+                    },
+                })
+            end)
             return true
         end,
         catch {

@@ -102,6 +102,22 @@ values, and should only rewrite its output when those inputs change.  This lets
 the scanner update import edges in the same invocation while keeping unchanged
 builds quiet.  `tests/cases/generated` is a complete example.
 
+Dependency scans are ordinary prepare-jobgraph jobs.  A Bluespec dependency's
+scan is ordered before its consumers, while independent targets can run
+Bluetcl concurrently under Xmake's global `-j`.  Within one Xmake invocation,
+targets with the same raw scan identity use single-flight: one target runs
+`Bluetcl::depend make`, concurrent callers wait for that result, and later
+callers reuse it from memory.  Each target still parses/finalizes its own graph,
+so provider ownership and target-specific `.bo` paths are never shared.
+The ordinary `scanning Bluespec` progress line is emitted by the single-flight
+owner, so it counts real Bluetcl invocations rather than waiting targets.
+
+The raw identity covers the canonical root and input stamps, ordered scanner
+argv (defines/options), canonical search directories, and the stamped
+BSC/Bluetcl identity.  Top module, backend, and the consumer target's output
+directory are deliberately excluded because they do not change imports.
+Nothing is written as a public scan manifest or metadata file.
+
 Each package compile is an ordinary Xmake job and follows Xmake's global `-j`
 setting.  Backend elaboration additionally uses a project-wide resource pool,
 shared by all Bluesim, Verilog, and SystemC targets in the invocation.  The
@@ -111,14 +127,18 @@ configuration options are:
   defaults to `1`.  Use `0` to inherit only the global `-j` limit.
 - `--bluespec_bsc_jobs=N`: optional maximum simultaneous BSC processes across
   package and backend jobs; defaults to `0` (disabled).
+- `--bluespec_scan_jobs=N`: optional project-wide maximum for actual Bluetcl
+  scans; defaults to `0`, so independent scans follow only Xmake's `-j`.
 - `--bluespec_trace_bsc=y`: print the target/job/phase, execution identity,
   full indexed argv, bdir/search/provider/output paths, and start/end timing
   for each BSC process.
+- `--bluespec_trace_scan=y`: print each target/root/scan identity, whether it
+  owns, waits for, or reuses a single-flight result, plus start/end timing.
 
 Configure persistent limits in the ordinary Xmake configuration, for example:
 
 ```sh
-xmake f --bluespec_backend_jobs=1 --bluespec_bsc_jobs=2
+xmake f --bluespec_backend_jobs=1 --bluespec_bsc_jobs=2 --bluespec_scan_jobs=0
 xmake -j 12 -a
 ```
 
@@ -127,6 +147,8 @@ reduce the number of ready jobs that enter BSC.  A backend slot covers the
 whole backend transaction, including its generated model/link phases, and is
 acquired only after incremental checking finds real work.  Package jobs remain
 parallel subject to their import DAG and the optional all-BSC cap.
+The scan pool is separate from both BSC pools and limits only real Bluetcl
+processes; it is not required to enable scan parallelism or single-flight.
 
 Xmake 3.0.4's `os.vrunv()` API does not expose its child PID.  Trace output
 marks this explicitly and exports `BLUESPEC_XMAKE_TARGET`,

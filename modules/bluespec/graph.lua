@@ -1,5 +1,6 @@
 local util = import("bluespec.util")
 local tools = import("bluespec.tools")
+local scan = import("bluespec.scan")
 local parser = import("bluespec.parser")
 local cache = import("bluespec.cache")
 local progress = import("utils.progress")
@@ -439,11 +440,12 @@ function prepare(target, opt)
         target:data_set("bluespec.graph", old)
         return old
     end
-    if opt and opt.progress then
-        progress.show(opt.progress, "scanning Bluespec %s", target:name())
-    end
-    local raw = tools.run_depend(target, util.canonical_root(target), config.scanner_dirs,
-        config.effective_defines, config.effective_options)
+    local raw = scan.depend(target, util.canonical_root(target), config.scanner_dirs,
+        config.effective_defines, config.effective_options, inputs, {
+            on_owner = opt and opt.progress and function()
+                progress.show(opt.progress, "scanning Bluespec %s", target:name())
+            end or nil,
+        })
     local parsed = parser.parse(raw, util.canonical_root(target))
     local graph = finalize(target, parsed, config, deps)
     cleanup_removed_packages(target, old, graph)

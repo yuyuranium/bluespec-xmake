@@ -12,10 +12,20 @@ option("bluespec_bsc_jobs")
     set_showmenu(true)
     set_description("Maximum concurrent BSC processes, including package compiles (0 inherits Xmake -j)")
 
+option("bluespec_scan_jobs")
+    set_default(0)
+    set_showmenu(true)
+    set_description("Maximum concurrent Bluetcl dependency scans (0 inherits Xmake -j)")
+
 option("bluespec_trace_bsc")
     set_default(false)
     set_showmenu(true)
     set_description("Trace BSC job identity, argv, paths, PID capability and timing")
+
+option("bluespec_trace_scan")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Trace Bluetcl scan identity, single-flight reuse and timing")
 
 -- Xmake's custom description API turns these into target-scope helpers while
 -- keeping the canonical low-level representation in target values.

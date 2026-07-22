@@ -979,6 +979,95 @@ local function analyze_fake_bsc(logfile, context, opt)
     return {events = events, starts = starts, maximum = maximum, maximum_backend = maximum_backend}
 end
 
+local function fake_bluetcl_events(logfile, context)
+    local events = {}
+    for line in (io.readfile(logfile) or ""):gmatch("[^\r\n]+") do
+        local event = {}
+        for name, value in line:gmatch("([%w_]+)=([^ ]*)") do
+            event[name] = value
+        end
+        event.time_us = tonumber(event.time_us)
+        event.status = tonumber(event.status)
+        if not event.event or not event.time_us or not event.root then
+            raise("%s: malformed fake Bluetcl event: %s", context, line)
+        end
+        table.insert(events, event)
+    end
+    table.sort(events, function(left, right)
+        if left.time_us == right.time_us then
+            return left.event == "end" and right.event ~= "end"
+        end
+        return left.time_us < right.time_us
+    end)
+    return events
+end
+
+local function analyze_fake_bluetcl(logfile, context)
+    local active = 0
+    local maximum = 0
+    local starts = 0
+    local roots = {}
+    local first_start = {}
+    local last_end = {}
+    local events = fake_bluetcl_events(logfile, context)
+    for _, event in ipairs(events) do
+        local root = path.filename(event.root)
+        if event.event == "start" then
+            active = active + 1
+            maximum = math.max(maximum, active)
+            starts = starts + 1
+            roots[root] = (roots[root] or 0) + 1
+            first_start[root] = math.min(first_start[root] or event.time_us, event.time_us)
+        elseif event.event == "end" then
+            active = active - 1
+            last_end[root] = math.max(last_end[root] or event.time_us, event.time_us)
+        else
+            raise("%s: unknown fake Bluetcl event %s", context, event.event)
+        end
+        if active < 0 then
+            raise("%s: unmatched fake Bluetcl end event", context)
+        end
+    end
+    if active ~= 0 then
+        raise("%s: fake Bluetcl process did not record a matching end event", context)
+    end
+    return {
+        events = events,
+        starts = starts,
+        roots = roots,
+        maximum = maximum,
+        first_start = first_start,
+        last_end = last_end,
+    }
+end
+
+local function scan_trace_identities(output, rootname)
+    local identities = {}
+    for line in (output or ""):gmatch("[^\r\n]+") do
+        if line:find("BSC_SCAN_TRACE START", 1, true) and
+            line:find("/" .. rootname, 1, true) then
+            local identity = line:match(" identity=([^ ]+)")
+            if identity then
+                identities[identity] = true
+            end
+        end
+    end
+    return identities
+end
+
+local function only_key(values, context)
+    local result
+    local count = 0
+    for value in pairs(values) do
+        result = value
+        count = count + 1
+    end
+    if count ~= 1 then
+        raise("%s: expected exactly one identity, got %d", context, count)
+    end
+    return result
+end
+
 local function assert_fake_paths(analysis, builddir, context)
     local root = path.normalize(path.absolute(builddir))
     for _, event in ipairs(analysis.events) do
@@ -1124,6 +1213,164 @@ local function test_bsc_concurrency(root, workroot, run)
     end
 end
 
+local function test_scan_concurrency(root, workroot, run)
+    local fake_project = path.join(root, "tests", "fake_bsc")
+    local fake_build = path.join(workroot, "fake-scan-tools-build")
+    run(fake_project, {"config", "-c", "-o", fake_build}, {context = "configure fake scan tools"})
+    run(fake_project, {"build", "-a", "-j", "1"}, {context = "build fake scan tools"})
+    local bindir = path.join(fake_build, "bin")
+    local fake_bsc = path.join(bindir, os.host() == "windows" and "bsc.exe" or "bsc")
+    local fake_bluetcl = path.join(bindir, os.host() == "windows" and "bluetcl.exe" or "bluetcl")
+    if not os.isexec(fake_bsc) or not os.isexec(fake_bluetcl) then
+        raise("fake scan tools build did not produce bsc and bluetcl executables")
+    end
+
+    local projectdir = copy_case(root, workroot, "scan_concurrency")
+    local fake_path = path.joinenv({bindir, os.getenv("PATH") or ""})
+    local function environment(logfile, extra)
+        local envs = {
+            PATH = fake_path,
+            BLUESPEC_FAKE_BLUETCL_LOG = logfile,
+            BLUESPEC_FAKE_BLUETCL_MS = "700",
+            BLUESPEC_FAKE_BSC_PACKAGE_MS = "0",
+            BLUESPEC_FAKE_BSC_BACKEND_MS = "0",
+        }
+        for name, value in pairs(extra or {}) do
+            envs[name] = value
+        end
+        return envs
+    end
+    local function configure_case(builddir, scan_jobs, logfile, trace)
+        run(projectdir, {
+            "config", "-c", "-o", builddir,
+            "--bluespec_backend_jobs=0",
+            "--bluespec_scan_jobs=" .. tostring(scan_jobs),
+            "--bluespec_trace_scan=" .. (trace and "y" or "n"),
+        }, {
+            context = "configure fake Bluetcl concurrency",
+            envs = environment(logfile),
+        })
+    end
+    local function build_all(logfile, context, jobs)
+        io.writefile(logfile, "")
+        local output = run(projectdir, {"build", "-a", "-j", tostring(jobs)}, {
+            context = context,
+            envs = environment(logfile),
+        })
+        return output, analyze_fake_bluetcl(logfile, context)
+    end
+    local function assert_single_flight(analysis, context)
+        -- Four unique roots, two four-way shared roots, one provider root and
+        -- one two-way shared consumer root: 15 target graphs, 8 raw scans.
+        if analysis.starts ~= 8 then
+            raise("%s: expected 8 raw scans for 15 target graphs, got %d", context, analysis.starts)
+        end
+        for _, rootname in ipairs({"SharedA.bsv", "SharedB.bsv", "Consumer.bsv"}) do
+            if analysis.roots[rootname] ~= 1 then
+                raise("%s: expected one single-flight scan for %s, got %s",
+                    context, rootname, tostring(analysis.roots[rootname]))
+            end
+        end
+    end
+
+    local parallel_build = path.join(projectdir, "build-scan-parallel")
+    local parallel_log = path.join(workroot, "fake-bluetcl-parallel.log")
+    configure_case(parallel_build, 0, parallel_log, true)
+    local traced, parallel = build_all(parallel_log, "parallel single-flight scans", 8)
+    assert_single_flight(parallel, "parallel single-flight scans")
+    local _, scan_progress_count = traced:gsub("scanning Bluespec", "")
+    if scan_progress_count ~= 8 then
+        raise("parallel single-flight scans: expected 8 real-scan progress lines, got %d",
+            scan_progress_count)
+    end
+    if parallel.maximum < 2 then
+        raise("parallel single-flight scans: independent roots did not overlap (maximum=%d)", parallel.maximum)
+    end
+    if not parallel.last_end["Provider.bsv"] or not parallel.first_start["Consumer.bsv"] or
+        parallel.first_start["Consumer.bsv"] < parallel.last_end["Provider.bsv"] then
+        raise("parallel single-flight scans: consumer scan started before its Bluespec dependency completed")
+    end
+    assert_contains(traced, "BSC_SCAN_TRACE START target=", "scan trace target")
+    assert_contains(traced, " mode=owner ", "scan trace owner")
+    assert_contains(traced, " mode=wait ", "scan trace waiter")
+    assert_contains(traced, " elapsed_ms=", "scan trace elapsed time")
+    local parallel_shared_identity = only_key(scan_trace_identities(traced, "SharedA.bsv"),
+        "shared-root scan identity excludes top")
+
+    local parallel_four_build = path.join(projectdir, "build-scan-parallel-four")
+    local parallel_four_log = path.join(workroot, "fake-bluetcl-parallel-four.log")
+    configure_case(parallel_four_build, 0, parallel_four_log, true)
+    local traced_four, parallel_four = build_all(parallel_four_log, "parallel scans with -j4", 4)
+    assert_single_flight(parallel_four, "parallel scans with -j4")
+    if parallel_four.maximum < 2 or parallel_four.maximum > 4 then
+        raise("parallel scans with -j4: expected 2..4 concurrent scans, got %d", parallel_four.maximum)
+    end
+    local parallel_four_identity = only_key(scan_trace_identities(traced_four, "SharedA.bsv"),
+        "-j4 shared-root scan identity")
+    if parallel_four_identity ~= parallel_shared_identity then
+        raise("raw scan identity changed across builddir/-j4/-j8: %s != %s",
+            parallel_four_identity, parallel_shared_identity)
+    end
+
+    io.writefile(parallel_log, "")
+    local unchanged = run(projectdir, {"build", "-a", "-j", "8"}, {
+        context = "scan unchanged cache hit",
+        envs = environment(parallel_log),
+    })
+    assert_bluespec_cache_hit(unchanged, "scan unchanged cache hit")
+    if (io.readfile(parallel_log) or "") ~= "" then
+        raise("scan unchanged cache hit unexpectedly invoked Bluetcl")
+    end
+
+    local shared_a = path.join(projectdir, "src", "SharedA.bsv")
+    io.writefile(shared_a, assert(io.readfile(shared_a)) .. "\n// invalidate shared scan\n")
+    local _, invalidated = build_all(parallel_log, "shared-root scan invalidation", 8)
+    if invalidated.starts ~= 1 or invalidated.roots["SharedA.bsv"] ~= 1 then
+        raise("shared-root scan invalidation: expected one SharedA raw scan, got %d", invalidated.starts)
+    end
+
+    local provider = path.join(projectdir, "src", "Provider.bsv")
+    io.writefile(provider, assert(io.readfile(provider)) .. "\n// invalidate provider graph\n")
+    local _, provider_invalidated = build_all(parallel_log, "provider graph scan invalidation", 8)
+    if provider_invalidated.starts ~= 2 or
+        provider_invalidated.roots["Provider.bsv"] ~= 1 or
+        provider_invalidated.roots["Consumer.bsv"] ~= 1 then
+        raise("provider graph scan invalidation: expected one provider and one shared consumer raw scan, got %d",
+            provider_invalidated.starts)
+    end
+
+    local capped_build = path.join(projectdir, "build-scan-capped")
+    local capped_log = path.join(workroot, "fake-bluetcl-capped.log")
+    configure_case(capped_build, 1, capped_log, true)
+    local capped_output, capped = build_all(capped_log, "project-wide scan cap", 8)
+    assert_single_flight(capped, "project-wide scan cap")
+    if capped.maximum ~= 1 then
+        raise("project-wide scan cap: expected maximum scan concurrency 1, got %d", capped.maximum)
+    end
+
+    local serial_build = path.join(projectdir, "build-scan-serial")
+    local serial_log = path.join(workroot, "fake-bluetcl-serial.log")
+    configure_case(serial_build, 0, serial_log, true)
+    local serial_output, serial = build_all(serial_log, "global -j1 scan interaction", 1)
+    assert_single_flight(serial, "global -j1 scan interaction")
+    if serial.maximum ~= 1 then
+        raise("global -j1 scan interaction: expected maximum scan concurrency 1, got %d", serial.maximum)
+    end
+    local capped_identity = only_key(scan_trace_identities(capped_output, "SharedA.bsv"),
+        "capped shared-root scan identity")
+    local serial_identity = only_key(scan_trace_identities(serial_output, "SharedA.bsv"),
+        "serial shared-root scan identity")
+    if capped_identity ~= serial_identity then
+        raise("scan identity changed across builddir/concurrency configuration: %s != %s",
+            capped_identity, serial_identity)
+    end
+    if parallel_shared_identity == capped_identity then
+        -- The source was deliberately modified between these builds; its
+        -- stamp must participate in the raw scan identity.
+        raise("shared-root source modification did not change raw scan identity")
+    end
+end
+
 local function test_cycle(root)
     local parser = import("bluespec.parser")
     local projectdir = os.projectdir()
@@ -1174,6 +1421,7 @@ function main()
         {"target CXX selection/cache identity", function() test_cxx_driver(root, workroot, run) end},
         {"BSC native toolchain identity", function() test_bsc_native_toolchain(root, workroot, run) end},
         {"project-wide BSC/backend concurrency", function() test_bsc_concurrency(root, workroot, run) end},
+        {"cross-target Bluetcl scan concurrency", function() test_scan_concurrency(root, workroot, run) end},
         {"Bluespec rule kind ownership", function() test_kind_ownership(root, workroot, run) end},
         {"native BDPI/builddir isolation", function() test_native_bdpi_builddir(root, workroot, run) end},
         {"cycle diagnostic", function() test_cycle(root) end},

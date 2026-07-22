@@ -22,7 +22,11 @@ duplicate providers, and unexported packages.  A native fake-BSC fixture also
 checks project-wide cross-target backend/all-BSC caps, `-j1` interaction,
 same-target package/backend ordering, exactly-once all-target scheduling,
 failure retry/completion state, and unchanged cache hits.  It does not require a
-shell/Python test script or produce a public manifest.
+shell/Python test script or produce a public manifest.  A native delayed
+fake-Bluetcl fixture measures actual PID/timestamp overlap, shared-root
+single-flight, dependency-to-consumer ordering, the optional scan cap, `-j1`,
+source and provider-graph invalidation, builddir-independent raw identity, and
+unchanged cache hits.
 
 Generated BSV that feeds dependency scanning must be produced by a generator
 target's prepare hook.  A normal `on_build` hook is too late because Xmake

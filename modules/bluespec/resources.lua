@@ -24,7 +24,8 @@ local function pool(name, limit)
         local project = path.normalize(path.absolute(os.projectdir()))
         local semaphore_name = "bluespec-xmake/" .. tostring(hash.strhash64(project)) .. "/" .. key
         pools[key] = scheduler.co_semaphore(semaphore_name, limit)
-        local trace = config.get("bluespec_trace_bsc")
+        local trace_option = name == "scan" and "bluespec_trace_scan" or "bluespec_trace_bsc"
+        local trace = config.get(trace_option)
         if trace == true or trace == "true" or trace == "yes" or trace == "y" or trace == "1" then
             print("BSC_RESOURCE pool=%s limit=%d", name, limit)
         end
@@ -70,4 +71,9 @@ end
 function with_bsc(callback)
     local limit = configured_limit("bluespec_bsc_jobs", 0)
     return with_pool(pool("bsc", limit), callback)
+end
+
+function with_scan(callback)
+    local limit = configured_limit("bluespec_scan_jobs", 0)
+    return with_pool(pool("scan", limit), callback)
 end

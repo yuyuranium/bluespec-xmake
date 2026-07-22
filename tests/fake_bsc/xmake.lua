@@ -5,3 +5,8 @@ target("bsc")
     set_kind("binary")
     add_files("fake_bsc.c")
     set_targetdir(path.join(get_config("builddir"), "bin"))
+
+target("bluetcl")
+    set_kind("binary")
+    add_files("fake_bluetcl.c")
+    set_targetdir(path.join(get_config("builddir"), "bin"))
