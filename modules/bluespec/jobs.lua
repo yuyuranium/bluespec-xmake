@@ -1,6 +1,7 @@
 local util = import("bluespec.util")
 local tools = import("bluespec.tools")
 local graphmod = import("bluespec.graph")
+local cache = import("bluespec.cache")
 local native = import("bluespec.native")
 local resources = import("bluespec.resources")
 local compiler = import("core.tool.compiler")
@@ -553,6 +554,7 @@ local function schedule_backend(target, jobgraph, graph, backend, package_jobs)
 end
 
 function schedule_build(target, jobgraph, backend)
+    cache.flush()
     local graph = graphmod.get(target)
     if not graph then
         raise("target(%s) has no Bluespec graph; prepare phase did not run", target:name())

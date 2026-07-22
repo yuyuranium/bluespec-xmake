@@ -26,7 +26,10 @@ shell/Python test script or produce a public manifest.  A native delayed
 fake-Bluetcl fixture measures actual PID/timestamp overlap, shared-root
 single-flight, dependency-to-consumer ordering, the optional scan cap, `-j1`,
 source and provider-graph invalidation, builddir-independent raw identity, and
-unchanged cache hits.
+unchanged cache hits.  Its grouped-root stress case declares 64 targets as 16
+adjacent four-target groups and checks both full `-j8` owner concurrency and
+whole-scan utilization, catching duplicate waiters that occupy worker slots and
+starve later unique roots.
 
 Generated BSV that feeds dependency scanning must be produced by a generator
 target's prepare hook.  A normal `on_build` hook is too late because Xmake

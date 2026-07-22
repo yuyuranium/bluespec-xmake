@@ -1,14 +1,10 @@
 local config = import("core.project.config")
-local scheduler = import("core.base.scheduler")
+local resources = import("bluespec.resources")
 local tools = import("bluespec.tools")
 local util = import("bluespec.util")
 
--- This table deliberately lives only for the current Xmake invocation.  The
--- target graph/depend cache remains responsible for cross-invocation reuse.
-local flights = {}
-
-local function enabled(name)
-    local value = config.get(name)
+local function enabled()
+    local value = config.get("bluespec_trace_scan")
     return value == true or value == "true" or value == "yes" or value == "y" or value == "1"
 end
 
@@ -25,10 +21,28 @@ local function canonical(pathname)
     return path.normalize(path.absolute(pathname, os.projectdir()))
 end
 
-local function identity(root, package_dirs, defines, options, inputs)
+local function print_trace(event, target, root, scan_id, opt)
+    if not enabled() then
+        return
+    end
+    opt = opt or {}
+    local now = os.mclock()
+    print("BSC_SCAN_TRACE %s target=%s root=%s identity=%s owner=%s wall=%s monotonic_ms=%s elapsed_ms=%s status=%s",
+        event, target:fullname(), root, scan_id or "", opt.owner or "",
+        os.date("%Y-%m-%dT%H:%M:%S%z"), tostring(now),
+        tostring(opt.started and (now - opt.started) or 0), tostring(opt.status or "pending"))
+end
+
+function trace(event, target, root, scan_id, opt)
+    print_trace(event, target, canonical(root), scan_id, opt)
+end
+
+-- Full raw identity. Input stamps are intentionally runtime data: generated
+-- BSV is ready by this point, and old scanner-discovered inputs are known.
+function identity(root, package_dirs, defines, options, inputs)
     root = canonical(root)
     local parts = {
-        "bluespec-raw-scan-v1",
+        "bluespec-raw-scan-v2",
         "root=" .. root,
         "scanner=" .. tools.scanner_identity(),
     }
@@ -38,7 +52,6 @@ local function identity(root, package_dirs, defines, options, inputs)
     for index, define in ipairs(util.list(defines)) do
         table.insert(parts, string.format("define[%d]=%s", index, tostring(define)))
     end
-    -- BSC options are argv, not a set: preserve their effective order.
     for index, option in ipairs(util.list(options)) do
         table.insert(parts, string.format("option[%d]=%s", index, tostring(option)))
     end
@@ -56,72 +69,48 @@ local function identity(root, package_dirs, defines, options, inputs)
     return key, tostring(hash.strhash64(key))
 end
 
-local function trace(target, root, scan_id, event, mode, started, status)
-    if not enabled("bluespec_trace_scan") then
-        return
-    end
-    local now = os.mclock()
-    print("BSC_SCAN_TRACE %s target=%s root=%s identity=%s mode=%s wall=%s monotonic_ms=%s elapsed_ms=%s status=%s",
-        event, target:fullname(), root, scan_id, mode,
-        os.date("%Y-%m-%dT%H:%M:%S%z"), tostring(now),
-        tostring(started and (now - started) or 0), tostring(status or "pending"))
-end
-
-local function result(state, target, root, scan_id, mode, started)
-    if state.succeeded then
-        trace(target, root, scan_id, "END", mode, started, "0")
-        return state.raw, scan_id
-    end
-    trace(target, root, scan_id, "END", mode, started, "failed")
-    raise(state.errors or "shared Bluetcl dependency scan failed")
+-- Only the actual Bluetcl process is inside the scan resource pool and the
+-- PROCESS interval. Queueing for --bluespec_scan_jobs is therefore excluded
+-- from process elapsed time and no duplicate target enters this function.
+function process(target, root, package_dirs, defines, options, scan_id)
+    root = canonical(root)
+    return resources.with_scan(function()
+        local started = os.mclock()
+        print_trace("PROCESS_START", target, root, scan_id, {started = started})
+        local raw
+        local errors
+        local succeeded = false
+        try {
+            function()
+                raw = tools.run_depend(target, root, package_dirs, defines, options, {identity = scan_id})
+                succeeded = true
+            end,
+            catch {
+                function(run_errors)
+                    errors = run_errors
+                end,
+            },
+        }
+        print_trace("PROCESS_END", target, root, scan_id, {
+            started = started,
+            status = succeeded and "0" or "failed",
+        })
+        if not succeeded then
+            raise(errors or "Bluetcl dependency scan failed")
+        end
+        return raw
+    end)
 end
 
 function depend(target, root, package_dirs, defines, options, inputs, opt)
     opt = opt or {}
     root = canonical(root)
-    local key, scan_id = identity(root, package_dirs, defines, options, inputs)
-    local started = os.mclock()
-    local state = flights[key]
-    if state then
-        if state.done then
-            trace(target, root, scan_id, "START", "reuse", started)
-            return result(state, target, root, scan_id, "reuse", started)
-        end
-        state.waiters = state.waiters + 1
-        trace(target, root, scan_id, "START", "wait", started)
-        state.semaphore:wait(-1)
-        return result(state, target, root, scan_id, "wait", started)
-    end
-
-    state = {
-        done = false,
-        succeeded = false,
-        waiters = 0,
-        semaphore = scheduler.co_semaphore("bluespec-xmake/scan/" .. scan_id, 0),
-    }
-    flights[key] = state
+    local _, scan_id = identity(root, package_dirs, defines, options, inputs)
     if opt.on_owner then
         opt.on_owner()
     end
-    trace(target, root, scan_id, "START", "owner", started)
-    try {
-        function()
-            state.raw = tools.run_depend(target, root, package_dirs, defines, options, {identity = scan_id})
-            state.succeeded = true
-        end,
-        catch {
-            function(errors)
-                state.errors = errors
-            end,
-        },
-        finally {
-            function()
-                state.done = true
-                if state.waiters > 0 then
-                    state.semaphore:post(state.waiters)
-                end
-            end,
-        },
-    }
-    return result(state, target, root, scan_id, "owner", started)
+    -- Direct callers do not participate in the scheduled build's dedup DAG.
+    -- The normal rule path always uses graph.schedule_prepare(), where one
+    -- explicit owner node is shared by target-specific finalize nodes.
+    return process(target, root, package_dirs, defines, options, scan_id)
 end

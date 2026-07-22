@@ -25,7 +25,7 @@ option("bluespec_trace_bsc")
 option("bluespec_trace_scan")
     set_default(false)
     set_showmenu(true)
-    set_description("Trace Bluetcl scan identity, single-flight reuse and timing")
+    set_description("Trace Bluetcl process, shared owner, duplicate and finalize timing")
 
 -- Xmake's custom description API turns these into target-scope helpers while
 -- keeping the canonical low-level representation in target values.

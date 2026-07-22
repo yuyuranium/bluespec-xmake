@@ -6,6 +6,8 @@ local cache = import("bluespec.cache")
 local progress = import("utils.progress")
 
 local pending_orders = {}
+local schedule_states = {}
+local declared_exports_cache = {}
 
 local function data(target, key)
     return target:data(key)
@@ -156,6 +158,111 @@ local function effective_config(target, deps)
         dependency_exported_dirs = util.unique_sorted(dependency_exported_dirs),
         dep_contexts = util.sorted(dep_contexts),
     }
+end
+
+-- Compute the scanner-visible declaration closure without requiring prepared
+-- package graphs. This key is used only to form safe jobgraph cohorts; the
+-- complete identity (including generated/source input stamps and tool
+-- identity) is computed by the owner job at execution time.
+local function declared_exports(target, visiting)
+    local target_name = target:fullname()
+    if declared_exports_cache[target_name] then
+        return declared_exports_cache[target_name]
+    end
+    visiting = visiting or {}
+    if visiting[target_name] then
+        raise("circular target dependency while computing Bluespec scan cohort for target(%s)", target:name())
+    end
+    visiting[target_name] = true
+    local dirs, defines, option_groups = own_config(target)
+    local result = {
+        dirs = {},
+        defines = {},
+        option_groups = {},
+        library_outputs = {},
+    }
+    append(result.dirs, dirs.public)
+    append(result.dirs, dirs.interface)
+    append(result.defines, defines.public)
+    append(result.defines, defines.interface)
+    append_groups(result.option_groups, option_groups.public)
+    append_groups(result.option_groups, option_groups.interface)
+    if data(target, "bluespec.rule") == "bluespec.library" then
+        table.insert(result.library_outputs, util.bdir(target))
+    end
+    for _, dep in ipairs(ordered_deps(target)) do
+        if is_bluespec(dep) then
+            local exported = declared_exports(dep, visiting)
+            append(result.dirs, exported.dirs)
+            append(result.defines, exported.defines)
+            append_groups(result.option_groups, exported.option_groups)
+            append(result.library_outputs, exported.library_outputs)
+        end
+    end
+    visiting[target_name] = nil
+    result.dirs = util.unique_sorted(result.dirs)
+    result.defines = util.unique_sorted(result.defines)
+    result.library_outputs = util.unique_sorted(result.library_outputs)
+    declared_exports_cache[target_name] = result
+    return result
+end
+
+local function scan_cohort_key(target)
+    local dirs, defines, option_groups = own_config(target)
+    local effective_dirs = {}
+    append(effective_dirs, dirs.all)
+    local scanner_dirs = {}
+    local effective_defines = {}
+    append(effective_defines, defines.private)
+    append(effective_defines, defines.public)
+    append(effective_defines, defines.interface)
+    local effective_option_groups = {}
+    append_groups(effective_option_groups, option_groups.private)
+    append_groups(effective_option_groups, option_groups.public)
+    append_groups(effective_option_groups, option_groups.interface)
+    for _, dep in ipairs(ordered_deps(target)) do
+        if is_bluespec(dep) then
+            local exported = declared_exports(dep)
+            append(effective_dirs, exported.library_outputs)
+            append(scanner_dirs, exported.dirs)
+            append(effective_defines, exported.defines)
+            append_groups(effective_option_groups, exported.option_groups)
+        end
+    end
+    append(scanner_dirs, effective_dirs)
+    return table.concat({
+        "bluespec-scan-cohort-v1",
+        "root=" .. util.canonical_root(target),
+        "search=" .. table.concat(util.unique_sorted(scanner_dirs), "\n"),
+        "defines=" .. table.concat(util.unique_sorted(effective_defines), "\n"),
+        "options=" .. util.option_groups_identity(effective_option_groups),
+    }, "\n")
+end
+
+-- Targets sharing a raw scan can still have prepare-time generators. One gate
+-- per equivalent dependency signature preserves that ordering without adding
+-- one runnable gate for every duplicate endpoint.
+local function prepare_signature(target)
+    local deps = {}
+    for _, dep in ipairs(ordered_deps(target)) do
+        table.insert(deps, dep:fullname())
+    end
+    return table.concat(util.unique_sorted(deps), "\n")
+end
+
+local function target_depends_on(target, expected, seen)
+    seen = seen or {}
+    local name = target:fullname()
+    if seen[name] then
+        return false
+    end
+    seen[name] = true
+    for _, dep in ipairs(ordered_deps(target)) do
+        if dep == expected or target_depends_on(dep, expected, seen) then
+            return true
+        end
+    end
+    return false
 end
 
 local function is_under(pathname, dirs)
@@ -429,7 +536,7 @@ function get(target)
     return graph or cache.get(target)
 end
 
-function prepare(target, opt)
+local function prepare_plan(target)
     local old = get(target)
     discard_incomplete_packages(target, old)
     local deps = dep_graphs(target)
@@ -438,19 +545,165 @@ function prepare(target, opt)
     local inputs, config_items_value = config_items(target, config, old)
     if old and not cache.changed(target, old, inputs, config_items_value) then
         target:data_set("bluespec.graph", old)
-        return old
+        return {target = target, cached = true, graph = old}
     end
-    local raw = scan.depend(target, util.canonical_root(target), config.scanner_dirs,
-        config.effective_defines, config.effective_options, inputs, {
+    return {
+        target = target,
+        cached = false,
+        old = old,
+        deps = deps,
+        config = config,
+        inputs = inputs,
+        root = util.canonical_root(target),
+    }
+end
+
+local function finalize_plan(plan, raw)
+    local target = plan.target
+    local parsed = parser.parse(raw, plan.root)
+    local graph = finalize(target, parsed, plan.config, plan.deps)
+    cleanup_removed_packages(target, plan.old, graph)
+    discard_incomplete_packages(target, graph)
+    cache.set(target, graph)
+    return graph
+end
+
+function prepare(target, opt)
+    local plan = prepare_plan(target)
+    if plan.cached then
+        return plan.graph
+    end
+    local raw = scan.depend(target, plan.root, plan.config.scanner_dirs,
+        plan.config.effective_defines, plan.config.effective_options, plan.inputs, {
             on_owner = opt and opt.progress and function()
                 progress.show(opt.progress, "scanning Bluespec %s", target:name())
             end or nil,
         })
-    local parsed = parser.parse(raw, util.canonical_root(target))
-    local graph = finalize(target, parsed, config, deps)
-    cleanup_removed_packages(target, old, graph)
-    discard_incomplete_packages(target, graph)
-    cache.set(target, graph)
+    local graph = finalize_plan(plan, raw)
+    cache.flush()
+    return graph
+end
+
+local function run_scan_cohort(cohort, opt)
+    cohort.plans = {}
+    cohort.raws = {}
+    local runtime_groups = {}
+    for _, member in ipairs(cohort.members) do
+        local plan = prepare_plan(member.target)
+        cohort.plans[member.target:fullname()] = plan
+        if not plan.cached then
+            local raw_key, scan_id = scan.identity(plan.root, plan.config.scanner_dirs,
+                plan.config.effective_defines, plan.config.effective_options, plan.inputs)
+            plan.raw_key = raw_key
+            plan.scan_id = scan_id
+            local group = runtime_groups[raw_key]
+            if not group then
+                group = {scan_id = scan_id, plans = {}}
+                runtime_groups[raw_key] = group
+            end
+            table.insert(group.plans, plan)
+        end
+    end
+
+    local groups = {}
+    for raw_key, group in pairs(runtime_groups) do
+        group.raw_key = raw_key
+        table.insert(groups, group)
+    end
+    table.sort(groups, function(left, right)
+        return left.scan_id < right.scan_id
+    end)
+
+    for _, group in ipairs(groups) do
+        local owner_plan = group.plans[1]
+        local owner = owner_plan.target
+        local owner_started = os.mclock()
+        scan.trace("OWNER_START", owner, owner_plan.root, group.scan_id, {
+            owner = owner:fullname(),
+            started = owner_started,
+        })
+        for index = 2, #group.plans do
+            local waiter = group.plans[index]
+            waiter.wait_started = os.mclock()
+            scan.trace("WAITER_WAIT", waiter.target, waiter.root, group.scan_id, {
+                owner = owner:fullname(),
+                started = waiter.wait_started,
+            })
+        end
+        if opt and opt.progress then
+            progress.show(opt.progress, "scanning Bluespec %s", owner:name())
+        end
+
+        local raw
+        local errors
+        local succeeded = false
+        try {
+            function()
+                raw = scan.process(owner, owner_plan.root, owner_plan.config.scanner_dirs,
+                    owner_plan.config.effective_defines, owner_plan.config.effective_options, group.scan_id)
+                succeeded = true
+            end,
+            catch {
+                function(run_errors)
+                    errors = run_errors
+                end,
+            },
+        }
+        scan.trace("OWNER_END", owner, owner_plan.root, group.scan_id, {
+            owner = owner:fullname(),
+            started = owner_started,
+            status = succeeded and "0" or "failed",
+        })
+        for index = 2, #group.plans do
+            local waiter = group.plans[index]
+            scan.trace("WAITER_RELEASE", waiter.target, waiter.root, group.scan_id, {
+                owner = owner:fullname(),
+                started = waiter.wait_started,
+                status = succeeded and "0" or "failed",
+            })
+        end
+        if not succeeded then
+            raise(errors or "Bluespec raw dependency scan owner failed")
+        end
+        cohort.raws[group.raw_key] = raw
+    end
+end
+
+local function finalize_cohort_target(cohort, target)
+    local plan = assert(cohort.plans and cohort.plans[target:fullname()],
+        "missing prepared Bluespec scan plan for target(%s)", target:name())
+    if plan.cached then
+        return plan.graph
+    end
+    local raw = assert(cohort.raws and cohort.raws[plan.raw_key],
+        "missing raw Bluespec scan result for target(%s)", target:name())
+    local started = os.mclock()
+    scan.trace("FINALIZE_START", target, plan.root, plan.scan_id, {
+        owner = cohort.owner_target:fullname(),
+        started = started,
+    })
+    local graph
+    local errors
+    local succeeded = false
+    try {
+        function()
+            graph = finalize_plan(plan, raw)
+            succeeded = true
+        end,
+        catch {
+            function(finalize_errors)
+                errors = finalize_errors
+            end,
+        },
+    }
+    scan.trace("FINALIZE_END", target, plan.root, plan.scan_id, {
+        owner = cohort.owner_target:fullname(),
+        started = started,
+        status = succeeded and "0" or "failed",
+    })
+    if not succeeded then
+        raise(errors or "Bluespec target-specific scan finalization failed")
+    end
     return graph
 end
 
@@ -459,12 +712,59 @@ local function add_pending(dep_job, consumer_job)
     table.insert(pending_orders[dep_job], consumer_job)
 end
 
+local function schedule_state(jobgraph)
+    local state = schedule_states[jobgraph]
+    if not state then
+        state = {cohorts = {}}
+        schedule_states[jobgraph] = state
+    end
+    return state
+end
+
 function schedule_prepare(target, jobgraph)
+    local state = schedule_state(jobgraph)
+    local cohort_key = scan_cohort_key(target)
+    local cohort = state.cohorts[cohort_key]
+    if cohort then
+        for _, member in ipairs(cohort.members) do
+            if target_depends_on(target, member.target) or target_depends_on(member.target, target) then
+                cohort = nil
+                cohort_key = cohort_key .. "\ntarget=" .. target:fullname()
+                break
+            end
+        end
+    end
+    if not cohort then
+        cohort = {
+            key = cohort_key,
+            owner_job = target:fullname() .. "/bluespec/scan",
+            owner_target = target,
+            members = {},
+            member_set = {},
+            gates = {},
+            owner_signature = prepare_signature(target),
+        }
+        state.cohorts[cohort_key] = cohort
+    end
+
     local job = target:fullname() .. "/bluespec/scan"
-    if not jobgraph:has(job) then
-        jobgraph:add(job, function(_, _, opt)
-            prepare(target, opt)
-        end)
+    if not cohort.member_set[target:fullname()] then
+        local signature = prepare_signature(target)
+        local member = {target = target, signature = signature, job = job}
+        cohort.member_set[target:fullname()] = true
+        table.insert(cohort.members, member)
+        if job == cohort.owner_job then
+            jobgraph:add(job, function(_, _, opt)
+                run_scan_cohort(cohort, opt)
+                finalize_cohort_target(cohort, target)
+            end)
+            cohort.gates[signature] = job
+        else
+            jobgraph:add(job, function()
+                finalize_cohort_target(cohort, target)
+            end)
+            jobgraph:add_orders(cohort.owner_job, job)
+        end
     end
     local pending = pending_orders[job]
     if pending then
@@ -473,13 +773,20 @@ function schedule_prepare(target, jobgraph)
         end
         pending_orders[job] = nil
     end
+    local gate = cohort.gates[prepare_signature(target)]
+    if not gate then
+        gate = target:fullname() .. "/bluespec/scan_gate"
+        cohort.gates[prepare_signature(target)] = gate
+        jobgraph:add(gate, function() end)
+        jobgraph:add_orders(gate, cohort.owner_job)
+    end
     for _, dep in ipairs(ordered_deps(target)) do
         if is_bluespec(dep) then
             local dep_job = dep:fullname() .. "/bluespec/scan"
             if jobgraph:has(dep_job) then
-                jobgraph:add_orders(dep_job, job)
+                jobgraph:add_orders(dep_job, gate)
             else
-                add_pending(dep_job, job)
+                add_pending(dep_job, gate)
             end
         end
     end

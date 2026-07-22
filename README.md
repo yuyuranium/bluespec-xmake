@@ -105,12 +105,13 @@ builds quiet.  `tests/cases/generated` is a complete example.
 Dependency scans are ordinary prepare-jobgraph jobs.  A Bluespec dependency's
 scan is ordered before its consumers, while independent targets can run
 Bluetcl concurrently under Xmake's global `-j`.  Within one Xmake invocation,
-targets with the same raw scan identity use single-flight: one target runs
-`Bluetcl::depend make`, concurrent callers wait for that result, and later
-callers reuse it from memory.  Each target still parses/finalizes its own graph,
-so provider ownership and target-specific `.bo` paths are never shared.
-The ordinary `scanning Bluespec` progress line is emitted by the single-flight
-owner, so it counts real Bluetcl invocations rather than waiting targets.
+targets with the same raw scan identity share one explicit jobgraph owner node.
+Their target-specific finalize nodes depend on that owner; duplicate targets do
+not start coroutine waiters and therefore do not consume Xmake `-j` slots while
+the raw scan is running.  Each target still parses/finalizes its own graph, so
+provider ownership and target-specific `.bo` paths are never shared.  The
+ordinary `scanning Bluespec` progress line is emitted by the owner and counts
+real Bluetcl invocations rather than duplicate target graphs.
 
 The raw identity covers the canonical root and input stamps, ordered scanner
 argv (defines/options), canonical search directories, and the stamped
@@ -132,8 +133,9 @@ configuration options are:
 - `--bluespec_trace_bsc=y`: print the target/job/phase, execution identity,
   full indexed argv, bdir/search/provider/output paths, and start/end timing
   for each BSC process.
-- `--bluespec_trace_scan=y`: print each target/root/scan identity, whether it
-  owns, waits for, or reuses a single-flight result, plus start/end timing.
+- `--bluespec_trace_scan=y`: print separate raw-process, owner lifecycle,
+  duplicate waiter/release, and target-finalize events with target, root, scan
+  identity, status, and timing.
 
 Configure persistent limits in the ordinary Xmake configuration, for example:
 

@@ -320,16 +320,14 @@ function run_depend(target, root, package_dirs, defines, options, opt)
     local output, errors
     local succeeded = try {
         function()
-            output, errors = resources.with_scan(function()
-                return run_quiet(toolset.bluetcl, {}, {
-                    stdin = input,
-                    envs = {
-                        BLUESPECDIR = toolset.bluespecdir,
-                        BLUESPEC_XMAKE_TARGET = target:fullname(),
-                        BLUESPEC_XMAKE_SCAN_IDENTITY = opt.identity or "",
-                    },
-                })
-            end)
+            output, errors = run_quiet(toolset.bluetcl, {}, {
+                stdin = input,
+                envs = {
+                    BLUESPECDIR = toolset.bluespecdir,
+                    BLUESPEC_XMAKE_TARGET = target:fullname(),
+                    BLUESPEC_XMAKE_SCAN_IDENTITY = opt.identity or "",
+                },
+            })
             return true
         end,
         catch {

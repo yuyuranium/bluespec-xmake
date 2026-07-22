@@ -1009,6 +1009,10 @@ local function analyze_fake_bluetcl(logfile, context)
     local roots = {}
     local first_start = {}
     local last_end = {}
+    local starts_by_pid = {}
+    local first_start_us
+    local last_end_us
+    local process_time_us = 0
     local events = fake_bluetcl_events(logfile, context)
     for _, event in ipairs(events) do
         local root = path.filename(event.root)
@@ -1018,9 +1022,18 @@ local function analyze_fake_bluetcl(logfile, context)
             starts = starts + 1
             roots[root] = (roots[root] or 0) + 1
             first_start[root] = math.min(first_start[root] or event.time_us, event.time_us)
+            first_start_us = math.min(first_start_us or event.time_us, event.time_us)
+            starts_by_pid[event.pid] = event.time_us
         elseif event.event == "end" then
             active = active - 1
             last_end[root] = math.max(last_end[root] or event.time_us, event.time_us)
+            last_end_us = math.max(last_end_us or event.time_us, event.time_us)
+            local process_start = starts_by_pid[event.pid]
+            if not process_start then
+                raise("%s: fake Bluetcl end event has no matching pid=%s start", context, tostring(event.pid))
+            end
+            process_time_us = process_time_us + event.time_us - process_start
+            starts_by_pid[event.pid] = nil
         else
             raise("%s: unknown fake Bluetcl event %s", context, event.event)
         end
@@ -1038,13 +1051,15 @@ local function analyze_fake_bluetcl(logfile, context)
         maximum = maximum,
         first_start = first_start,
         last_end = last_end,
+        span_us = first_start_us and last_end_us and (last_end_us - first_start_us) or 0,
+        process_time_us = process_time_us,
     }
 end
 
 local function scan_trace_identities(output, rootname)
     local identities = {}
     for line in (output or ""):gmatch("[^\r\n]+") do
-        if line:find("BSC_SCAN_TRACE START", 1, true) and
+        if line:find("BSC_SCAN_TRACE PROCESS_START", 1, true) and
             line:find("/" .. rootname, 1, true) then
             local identity = line:match(" identity=([^ ]+)")
             if identity then
@@ -1273,6 +1288,88 @@ local function test_scan_concurrency(root, workroot, run)
         end
     end
 
+    local starvation_project = copy_case(root, workroot, "scan_starvation")
+    local starvation_build = path.join(starvation_project, "build-scan-starvation")
+    local starvation_log = path.join(workroot, "fake-bluetcl-starvation.log")
+    local starvation_env = environment(starvation_log, {BLUESPEC_FAKE_BLUETCL_MS = "1500"})
+    run(starvation_project, {
+        "config", "-c", "-o", starvation_build,
+        "--bluespec_backend_jobs=0",
+        "--bluespec_scan_jobs=0",
+        "--bluespec_trace_scan=y",
+    }, {
+        context = "configure grouped-root scan starvation",
+        envs = starvation_env,
+    })
+    io.writefile(starvation_log, "")
+    local starvation_output = run(starvation_project, {"build", "-a", "-j", "8"}, {
+        context = "grouped-root scan starvation",
+        envs = starvation_env,
+    })
+    local starvation = analyze_fake_bluetcl(starvation_log, "grouped-root scan starvation")
+    if starvation.starts ~= 16 then
+        raise("grouped-root scan starvation: expected 16 raw scans for 64 target graphs, got %d",
+            starvation.starts)
+    end
+    for root_index = 1, 16 do
+        local rootname = string.format("Root%02d.bsv", root_index)
+        if starvation.roots[rootname] ~= 1 then
+            raise("grouped-root scan starvation: expected one raw scan for %s, got %s",
+                rootname, tostring(starvation.roots[rootname]))
+        end
+    end
+    if starvation.maximum ~= 8 then
+        raise("grouped-root scan starvation: expected all 8 Xmake slots to run unique owners, got %d",
+            starvation.maximum)
+    end
+    local delay_us = 1500000
+    local ideal_span_us = math.ceil(16 / 8) * delay_us
+    local maximum_span_us = ideal_span_us + 2500000
+    if starvation.span_us > maximum_span_us then
+        raise("grouped-root scan starvation: process span %.3fs exceeds %.3fs (ideal %.3fs)",
+            starvation.span_us / 1000000, maximum_span_us / 1000000, ideal_span_us / 1000000)
+    end
+    local utilization = starvation.span_us > 0 and
+        starvation.process_time_us / (starvation.span_us * 8) or 0
+    if utilization < 0.50 then
+        raise("grouped-root scan starvation: owner utilization %.1f%% shows mid-build starvation",
+            utilization * 100)
+    end
+
+    local trace_counts = {}
+    local owner_ended = {}
+    for line in starvation_output:gmatch("[^\r\n]+") do
+        local event = line:match("BSC_SCAN_TRACE ([A-Z_]+)")
+        if event then
+            trace_counts[event] = (trace_counts[event] or 0) + 1
+            local identity = line:match(" identity=([^ ]+)")
+            if event == "OWNER_END" then
+                owner_ended[identity] = true
+            elseif event == "WAITER_RELEASE" or event == "FINALIZE_START" then
+                if not owner_ended[identity] then
+                    raise("grouped-root scan trace: %s preceded OWNER_END for identity %s",
+                        event, tostring(identity))
+                end
+            end
+        end
+    end
+    local expected_trace_counts = {
+        OWNER_START = 16,
+        OWNER_END = 16,
+        PROCESS_START = 16,
+        PROCESS_END = 16,
+        WAITER_WAIT = 48,
+        WAITER_RELEASE = 48,
+        FINALIZE_START = 64,
+        FINALIZE_END = 64,
+    }
+    for event, expected in pairs(expected_trace_counts) do
+        if trace_counts[event] ~= expected then
+            raise("grouped-root scan trace: expected %d %s events, got %s",
+                expected, event, tostring(trace_counts[event]))
+        end
+    end
+
     local parallel_build = path.join(projectdir, "build-scan-parallel")
     local parallel_log = path.join(workroot, "fake-bluetcl-parallel.log")
     configure_case(parallel_build, 0, parallel_log, true)
@@ -1290,9 +1387,10 @@ local function test_scan_concurrency(root, workroot, run)
         parallel.first_start["Consumer.bsv"] < parallel.last_end["Provider.bsv"] then
         raise("parallel single-flight scans: consumer scan started before its Bluespec dependency completed")
     end
-    assert_contains(traced, "BSC_SCAN_TRACE START target=", "scan trace target")
-    assert_contains(traced, " mode=owner ", "scan trace owner")
-    assert_contains(traced, " mode=wait ", "scan trace waiter")
+    assert_contains(traced, "BSC_SCAN_TRACE PROCESS_START target=", "scan process trace")
+    assert_contains(traced, "BSC_SCAN_TRACE OWNER_START target=", "scan owner trace")
+    assert_contains(traced, "BSC_SCAN_TRACE WAITER_WAIT target=", "scan waiter trace")
+    assert_contains(traced, "BSC_SCAN_TRACE FINALIZE_START target=", "scan finalize trace")
     assert_contains(traced, " elapsed_ms=", "scan trace elapsed time")
     local parallel_shared_identity = only_key(scan_trace_identities(traced, "SharedA.bsv"),
         "shared-root scan identity excludes top")

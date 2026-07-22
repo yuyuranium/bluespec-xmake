@@ -4,6 +4,7 @@ local tools = import("bluespec.tools")
 
 local memory = {}
 local cache_name = "bluespec-xmake"
+local dirty = false
 
 local function absolute(pathname)
     return path.normalize(path.absolute(pathname))
@@ -53,7 +54,18 @@ function set(target, value)
     memory[key] = value
     target:data_set("bluespec.graph", value)
     localcache.set(cache_name, key, value)
-    localcache.save(cache_name)
+    dirty = true
+end
+
+-- Graph finalizers run concurrently in the prepare jobgraph. Saving the same
+-- localcache file once per target serializes those coroutines and can occupy
+-- global -j slots after a raw scan. Persist the invocation's staged graphs
+-- once, when Xmake constructs the following build jobgraph.
+function flush()
+    if dirty then
+        localcache.save(cache_name)
+        dirty = false
+    end
 end
 
 function fingerprint(target, inputs, config)
