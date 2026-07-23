@@ -267,6 +267,25 @@ local function generated_sources(directory)
     return ordered
 end
 
+local function systemc_elaboration_args(target, graph)
+    local program, args = tools.package_args(target, graph, nil, "bluesim")
+    table.insert(args, "-simdir")
+    table.insert(args, util.backend_dir(target, "systemc"))
+    table.insert(args, "-g")
+    table.insert(args, assert(graph.top, "Bluespec backend requires a top module"))
+    table.insert(args, "-u")
+    table.insert(args, graph.root)
+    return program, args
+end
+
+local function systemc_generate_args(target, graph)
+    local program, args = backend_args(target, graph, "systemc", "generate")
+    table.insert(args, "-o")
+    table.insert(args, path.join(util.backend_dir(target, "systemc"), ".bsc-systemc-model"))
+    append_pairs(args, native.systemc_args(target))
+    return program, args
+end
+
 local function build_systemc(target, graph)
     local systemc_dir = util.backend_dir(target, "systemc")
     os.rm(systemc_dir)
@@ -275,30 +294,14 @@ local function build_systemc(target, graph)
     os.mkdir(include_dir)
     -- SystemC elaboration consumes the Bluesim .ba/object closure first;
     -- the SystemC link step then emits the native C/C++ model sources.
-    local _, elaboration_args = tools.package_args(target, graph, nil, "bluesim")
-    table.insert(elaboration_args, "-simdir")
-    table.insert(elaboration_args, systemc_dir)
-    table.insert(elaboration_args, "-g")
-    table.insert(elaboration_args, assert(graph.top, "Bluespec backend requires a top module"))
-    table.insert(elaboration_args, "-u")
-    table.insert(elaboration_args, graph.root)
+    local _, elaboration_args = systemc_elaboration_args(target, graph)
     tools.run_bsc(target, elaboration_args, {
         graph = graph,
         job = backend_job(target, "systemc"),
         phase = "systemc-elaborate",
     })
-    local program, args = backend_args(target, graph, "systemc", "generate")
+    local program, args = systemc_generate_args(target, graph)
     local bsc_output = path.join(util.backend_dir(target, "systemc"), ".bsc-systemc-model")
-    table.insert(args, "-o")
-    table.insert(args, bsc_output)
-    for _, includedir in ipairs(target:get("includedirs") or {}) do
-        table.insert(args, "-Xc++")
-        table.insert(args, "-I" .. includedir)
-    end
-    for _, includedir in ipairs(native.include_dirs(target)) do
-        table.insert(args, "-Xc++")
-        table.insert(args, "-I" .. includedir)
-    end
     tools.run_bsc(target, args, {
         graph = graph,
         job = backend_job(target, "systemc"),
@@ -335,13 +338,13 @@ local function build_systemc(target, graph)
             include_dir,
             path.join(tools.tools().bluespecdir, "Bluesim"),
         }
-        for _, directory in ipairs(target:get("includedirs") or {}) do
-            table.insert(includedirs, directory)
-        end
         for _, directory in ipairs(native.include_dirs(target)) do
             table.insert(includedirs, directory)
         end
-        local configs = {includedirs = includedirs}
+        local configs = {
+            includedirs = includedirs,
+            sysincludedirs = native.sysinclude_dirs(target),
+        }
         compiler.compile(source, object, {target = target, configs = configs})
         table.insert(objects, object)
     end
@@ -477,7 +480,7 @@ local function backend_depend(target, graph, backend, callback)
         marker = path.absolute(target:targetfile())
     end
     local values = {
-        "bluespec-backend-depend-v3",
+        "bluespec-backend-depend-v4",
         backend,
         graph.fingerprint,
         graph.top or "",
@@ -488,7 +491,19 @@ local function backend_depend(target, graph, backend, callback)
         table.concat(util.list(target:get("linkdirs")), "\n"),
         table.concat(util.list(target:get("syslinks")), "\n"),
         native.link_identity(target),
+        backend == "systemc" and native.systemc_identity(target) or "",
     }
+    if backend == "systemc" then
+        for phase, command in ipairs({
+            {systemc_elaboration_args(target, graph)},
+            {systemc_generate_args(target, graph)},
+        }) do
+            add_value(values, string.format("systemc-program[%d]", phase), command[1])
+            for index, argument in ipairs(command[2] or {}) do
+                add_value(values, string.format("systemc-argv[%d][%d]", phase, index), argument)
+            end
+        end
+    end
     local completion = path.join(util.state_dir(target), backend .. ".complete")
     local signature = tostring(hash.strhash64(table.concat(values, "\n")))
     local completed_signature = os.isfile(completion) and

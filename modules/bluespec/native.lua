@@ -12,6 +12,20 @@ local function add_xlink(args, seen, kind, value)
     add_unique(args, seen, kind, {"-Xl", value})
 end
 
+local function config_values(target, name)
+    local result = {}
+    local seen = {}
+    local values = target:get_from(name, "*")
+    for _, value in ipairs(util.list(values)) do
+        value = tostring(value)
+        if not seen[value] then
+            seen[value] = true
+            table.insert(result, value)
+        end
+    end
+    return result
+end
+
 -- Xmake's orderdeps() is a flattened, ordered, deduplicated transitive
 -- closure.  Keep that ordering while excluding Bluespec package targets,
 -- whose .bo providers are handled by the package graph instead.
@@ -103,13 +117,64 @@ function link_identity(target)
 end
 
 function include_dirs(target)
-    local dirs = {}
+    return config_values(target, "includedirs")
+end
+
+function sysinclude_dirs(target)
+    return config_values(target, "sysincludedirs")
+end
+
+-- BSC compiles and links part of a SystemC model internally. Mirror the
+-- ordinary Xmake target/package configuration into that invocation. Each
+-- compiler token is passed separately because BSC does not split -Xc++
+-- arguments.
+function systemc_args(target)
+    local args = {}
+    local seen = {}
+    for _, directory in ipairs(include_dirs(target)) do
+        add_unique(args, seen, "includedir", {"-Xc++", "-I" .. directory})
+    end
+    for _, directory in ipairs(sysinclude_dirs(target)) do
+        add_unique(args, seen, "sysincludedir-flag:" .. directory, {"-Xc++", "-isystem"})
+        add_unique(args, seen, "sysincludedir-path", {"-Xc++", directory})
+    end
+    for _, directory in ipairs(config_values(target, "linkdirs")) do
+        add_unique(args, seen, "linkdir", {"-L", directory})
+    end
+    for _, link in ipairs(config_values(target, "links")) do
+        add_unique(args, seen, "link", {"-l", link})
+    end
+    for _, link in ipairs(config_values(target, "syslinks")) do
+        add_unique(args, seen, "syslink", {"-l", link})
+    end
+    for _, flag in ipairs(config_values(target, "ldflags")) do
+        add_xlink(args, seen, "ldflag", flag)
+    end
     for _, dep in ipairs(dependencies(target)) do
-        for _, directory in ipairs(util.list(dep:get("includedirs"))) do
-            table.insert(dirs, directory)
+        local targetfile = dep:targetfile()
+        if targetfile and targetfile ~= "" then
+            targetfile = path.absolute(targetfile)
+            if dep:is_static() then
+                add_static_archive(args, seen, target, targetfile)
+            else
+                add_xlink(args, seen, "targetfile", targetfile)
+            end
         end
     end
-    return util.unique_sorted(dirs)
+    return args
+end
+
+function systemc_identity(target)
+    local result = {}
+    for _, pair in ipairs(systemc_args(target)) do
+        local encoded = {}
+        for _, value in ipairs(pair) do
+            value = tostring(value)
+            table.insert(encoded, tostring(#value) .. ":" .. value)
+        end
+        table.insert(result, table.concat(encoded))
+    end
+    return table.concat(result, "\n")
 end
 
 function targetfiles(target)

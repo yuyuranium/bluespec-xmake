@@ -979,6 +979,127 @@ local function analyze_fake_bsc(logfile, context, opt)
     return {events = events, starts = starts, maximum = maximum, maximum_backend = maximum_backend}
 end
 
+local function bsc_trace_argv(output, phase, context)
+    local result
+    local current
+    for line in (output or ""):gmatch("[^\r\n]+") do
+        local started = line:match("BSC_TRACE START .* phase=([^ ]+)")
+        if started then
+            current = started
+            if current == phase then
+                result = {}
+            end
+        elseif line:find("BSC_TRACE END", 1, true) then
+            current = nil
+        elseif current == phase then
+            local argument = line:match("BSC_TRACE ARGV%[%d+%]=(.*)$")
+            if argument ~= nil then
+                table.insert(result, argument)
+            end
+        end
+    end
+    if not result then
+        raise("%s: missing BSC trace for phase %s", context, phase)
+    end
+    return result
+end
+
+local function assert_argv_sequence(args, expected, context)
+    for first = 1, #args - #expected + 1 do
+        local matches = true
+        for offset, value in ipairs(expected) do
+            if args[first + offset - 1] ~= value then
+                matches = false
+                break
+            end
+        end
+        if matches then
+            return
+        end
+    end
+    raise("%s: missing argv sequence [%s]\nactual: [%s]", context,
+        table.concat(expected, ", "), table.concat(args, ", "))
+end
+
+local function test_systemc_package(root, workroot, run)
+    local fake_project = path.join(root, "tests", "fake_bsc")
+    local fake_build = path.join(workroot, "fake-systemc-tools-build")
+    run(fake_project, {"config", "-c", "-o", fake_build}, {
+        context = "configure fake SystemC tools",
+    })
+    run(fake_project, {"build", "-a", "-j", "1"}, {
+        context = "build fake SystemC tools",
+    })
+    local bindir = path.join(fake_build, "bin")
+    local fake_bsc = path.join(bindir, os.host() == "windows" and "bsc.exe" or "bsc")
+    local fake_bluetcl = path.join(bindir, os.host() == "windows" and "bluetcl.exe" or "bluetcl")
+    if not os.isexec(fake_bsc) or not os.isexec(fake_bluetcl) then
+        raise("fake SystemC tools build did not produce bsc and bluetcl executables")
+    end
+
+    local projectdir = copy_case(root, workroot, "systemc_package")
+    local builddir = path.join(projectdir, "build-systemc")
+    local envs = {
+        PATH = path.joinenv({bindir, os.getenv("PATH") or ""}),
+        BLUESPEC_FAKE_BSC_PACKAGE_MS = "0",
+        BLUESPEC_FAKE_BSC_BACKEND_MS = "0",
+        BLUESPEC_FAKE_BLUETCL_MS = "0",
+    }
+    local function configure_variant(variant)
+        run(projectdir, {
+            "config", "-o", builddir,
+            "--local_systemc_variant=" .. variant,
+            "--bluespec_trace_bsc=y",
+        }, {
+            context = "configure local SystemC package variant " .. variant,
+            envs = envs,
+        })
+    end
+    local function check_variant(variant)
+        local context = "local SystemC package variant " .. variant
+        local output = run(projectdir, {"build", "model"}, {
+            context = context,
+            envs = envs,
+        })
+        assert_contains(output, "building Bluespec systemc model", context)
+        local args = bsc_trace_argv(output, "systemc-generate", context)
+        local prefix = path.absolute(path.join(projectdir, "prefix-" .. variant))
+        assert_argv_sequence(args, {"-Xc++", "-I" .. path.join(prefix, "ordinary")},
+            context .. " ordinary include")
+        assert_argv_sequence(args, {
+            "-Xc++", "-isystem", "-Xc++", path.join(prefix, "system"),
+        }, context .. " system include")
+        assert_argv_sequence(args, {"-L", path.join(prefix, "lib")},
+            context .. " package linkdir")
+        assert_argv_sequence(args, {"-l", "local_systemc_" .. variant},
+            context .. " package link")
+        assert_argv_sequence(args, {"-l", "local_runtime_" .. variant},
+            context .. " package syslink")
+        assert_argv_sequence(args, {"-Xl", "-Wl,--local-systemc-" .. variant},
+            context .. " package ldflag")
+        local targetfile = output:match("BSC_TRACE PATH [^\r\n]- targetfile=([^\r\n]+)")
+        if not targetfile or not os.isfile(targetfile) then
+            raise("%s: missing generated SystemC static archive %s", context,
+                tostring(targetfile))
+        end
+        return output
+    end
+
+    configure_variant("a")
+    check_variant("a")
+    assert_bluespec_cache_hit(run(projectdir, {"build", "model"}, {
+        context = "local SystemC package variant a cache hit",
+        envs = envs,
+    }), "local SystemC package variant a cache hit")
+
+    configure_variant("b")
+    check_variant("b")
+    assert_bluespec_cache_hit(run(projectdir, {"build", "model"}, {
+        context = "local SystemC package variant b cache hit",
+        envs = envs,
+    }), "local SystemC package variant b cache hit")
+end
+
 local function fake_bluetcl_events(logfile, context)
     local events = {}
     for line in (io.readfile(logfile) or ""):gmatch("[^\r\n]+") do
@@ -1518,6 +1639,7 @@ function main()
         {"Bluesim/Verilog backends", function() test_backends(root, workroot, run) end},
         {"target CXX selection/cache identity", function() test_cxx_driver(root, workroot, run) end},
         {"BSC native toolchain identity", function() test_bsc_native_toolchain(root, workroot, run) end},
+        {"SystemC native package propagation", function() test_systemc_package(root, workroot, run) end},
         {"project-wide BSC/backend concurrency", function() test_bsc_concurrency(root, workroot, run) end},
         {"cross-target Bluetcl scan concurrency", function() test_scan_concurrency(root, workroot, run) end},
         {"Bluespec rule kind ownership", function() test_kind_ownership(root, workroot, run) end},

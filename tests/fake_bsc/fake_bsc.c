@@ -92,9 +92,12 @@ int main(int argc, char **argv) {
 
     const char *bdir = value_after(argc, argv, "-bdir");
     const char *vdir = value_after(argc, argv, "-vdir");
+    const char *simdir = value_after(argc, argv, "-simdir");
     const char *top = value_after(argc, argv, "-g");
+    if (!*top) top = value_after(argc, argv, "-e");
     const char *source = source_arg(argc, argv);
-    const char *kind = has_flag(argc, argv, "-verilog") && *top ? "backend" : "package";
+    const char *kind = (has_flag(argc, argv, "-verilog") ||
+                        has_flag(argc, argv, "-systemc")) && *top ? "backend" : "package";
     const char *sleep_value = getenv(strcmp(kind, "backend") == 0
         ? "BLUESPEC_FAKE_BSC_BACKEND_MS" : "BLUESPEC_FAKE_BSC_PACKAGE_MS");
     long delay = sleep_value ? strtol(sleep_value, NULL, 10) : 50;
@@ -103,7 +106,22 @@ int main(int argc, char **argv) {
 
     const char *fail_top = getenv("BLUESPEC_FAKE_BSC_FAIL_TOP");
     int status = fail_top && *fail_top && strcmp(fail_top, top) == 0 ? 23 : 0;
-    if (status == 0 && strcmp(kind, "backend") == 0) {
+    if (status == 0 && has_flag(argc, argv, "-systemc") && *top) {
+        char header[4096];
+        char source_output[4096];
+        snprintf(header, sizeof(header), "%s/%s_systemc.h", simdir, top);
+        snprintf(source_output, sizeof(source_output), "%s/%s_systemc.cpp", simdir, top);
+        status = write_text(header,
+            "#pragma once\nint bluespec_xmake_fake_systemc(void);\n") == 0 ? 0 : 24;
+        if (status == 0) {
+            status = write_text(source_output,
+                "#include <ordinary_marker.hpp>\n"
+                "#include <systemc.h>\n"
+                "int bluespec_xmake_fake_systemc(void) {\n"
+                "    return BLUESPEC_XMAKE_ORDINARY + BLUESPEC_XMAKE_SYSTEMC;\n"
+                "}\n") == 0 ? 0 : 24;
+        }
+    } else if (status == 0 && strcmp(kind, "backend") == 0) {
         char output[4096];
         snprintf(output, sizeof(output), "%s/%s.v", vdir, top);
         status = write_text(output, "// fake Bluespec Verilog output\n") == 0 ? 0 : 24;
