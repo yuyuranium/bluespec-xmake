@@ -169,10 +169,43 @@ local function define_rule(name, backend, required_kind, needs_top)
             end
             if backend == "systemc" then
                 local include_dir = path.join(util.backend_dir(target, "systemc"), "include")
+                local toolset = import("bluespec.tools").tools()
+                local bluesim_dir = path.normalize(path.join(toolset.bluespecdir, "Bluesim"))
+                local function has_runtime_library(name)
+                    for _, filename in ipairs({
+                        "lib" .. name .. ".a",
+                        name .. ".lib",
+                        "lib" .. name .. ".lib",
+                    }) do
+                        if os.isfile(path.join(bluesim_dir, filename)) then
+                            return true
+                        end
+                    end
+                    return false
+                end
+                if not os.isdir(bluesim_dir) or
+                    not has_runtime_library("bskernel") or
+                    not has_runtime_library("bsprim") then
+                    raise("BSC installation for target(%s) is missing the native Bluesim SDK in %s",
+                        target:name(), bluesim_dir)
+                end
+                -- Custom-built static targets do not automatically contribute
+                -- their archive to a native dependent's linker command.
+                -- Export it explicitly, before the libraries that satisfy its
+                -- unresolved symbols. Interface-only keeps the not-yet-built
+                -- archive out of BSC's own SystemC generate invocation.
+                target:add("linkdirs", target:targetdir(), {interface = true})
+                target:add("links", target:linkname(), {interface = true})
                 target:add("includedirs", include_dir, {public = true})
-                -- The generated archive contains SystemC model objects; its
-                -- native consumers must inherit the SystemC link requirement.
+                target:add("includedirs", bluesim_dir, {public = true})
+                target:add("linkdirs", bluesim_dir, {public = true})
+                -- BSC's documented SystemC native order is systemc, bskernel,
+                -- bsprim, then platform/system libraries. Keep these as
+                -- ordinary Xmake links so native consumers receive the right
+                -- spelling and ordering for their selected platform.
                 target:add("links", "systemc", {public = true})
+                target:add("links", "bskernel", {public = true})
+                target:add("links", "bsprim", {public = true})
             end
         end)
 

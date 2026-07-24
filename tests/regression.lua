@@ -1045,6 +1045,14 @@ local function test_systemc_package(root, workroot, run)
         BLUESPEC_FAKE_BSC_BACKEND_MS = "0",
         BLUESPEC_FAKE_BLUETCL_MS = "0",
     }
+    local active_envs = envs
+    local active_bluesim_dir = path.join(fake_build, "lib", "Bluesim")
+    local function assert_consumer_cache_hit(output, context)
+        assert_bluespec_cache_hit(output, context)
+        for _, message in ipairs({"compiling.", "linking.", "archiving."}) do
+            assert_not_contains(output, message, context)
+        end
+    end
     local function configure_variant(variant)
         run(projectdir, {
             "config", "-o", builddir,
@@ -1052,14 +1060,14 @@ local function test_systemc_package(root, workroot, run)
             "--bluespec_trace_bsc=y",
         }, {
             context = "configure local SystemC package variant " .. variant,
-            envs = envs,
+            envs = active_envs,
         })
     end
     local function check_variant(variant)
         local context = "local SystemC package variant " .. variant
         local output = run(projectdir, {"build", "model"}, {
-            context = context,
-            envs = envs,
+            context = context .. " model",
+            envs = active_envs,
         })
         assert_contains(output, "building Bluespec systemc model", context)
         local args = bsc_trace_argv(output, "systemc-generate", context)
@@ -1075,29 +1083,61 @@ local function test_systemc_package(root, workroot, run)
             context .. " package link")
         assert_argv_sequence(args, {"-l", "local_runtime_" .. variant},
             context .. " package syslink")
-        assert_argv_sequence(args, {"-Xl", "-Wl,--local-systemc-" .. variant},
+        local ldflag = variant == "a" and "-Wl,-z,relro" or "-Wl,-z,now"
+        assert_argv_sequence(args, {"-Xl", ldflag},
             context .. " package ldflag")
+        assert_argv_sequence(args, {"-Xc++", "-I" .. active_bluesim_dir},
+            context .. " BSC Bluesim include")
+        assert_argv_sequence(args, {"-L", active_bluesim_dir},
+            context .. " BSC Bluesim linkdir")
+        assert_argv_sequence(args, {"-l", "systemc", "-l", "bskernel", "-l", "bsprim"},
+            context .. " BSC runtime link order")
         local targetfile = output:match("BSC_TRACE PATH [^\r\n]- targetfile=([^\r\n]+)")
         if not targetfile or not os.isfile(targetfile) then
             raise("%s: missing generated SystemC static archive %s", context,
                 tostring(targetfile))
         end
-        return output
+        local consumer_output = run(projectdir, {"build", "consumer"}, {
+            context = context .. " native consumer",
+            envs = active_envs,
+        })
+        assert_contains(run(projectdir, {"run", "consumer"}, {
+            context = context .. " executable",
+            envs = active_envs,
+        }), "SYSTEMC_CONSUMER_OK", context .. " executable")
+        return output, consumer_output
     end
 
     configure_variant("a")
     check_variant("a")
-    assert_bluespec_cache_hit(run(projectdir, {"build", "model"}, {
+    assert_consumer_cache_hit(run(projectdir, {"build", "consumer"}, {
         context = "local SystemC package variant a cache hit",
-        envs = envs,
+        envs = active_envs,
     }), "local SystemC package variant a cache hit")
 
     configure_variant("b")
     check_variant("b")
-    assert_bluespec_cache_hit(run(projectdir, {"build", "model"}, {
+    assert_consumer_cache_hit(run(projectdir, {"build", "consumer"}, {
         context = "local SystemC package variant b cache hit",
-        envs = envs,
+        envs = active_envs,
     }), "local SystemC package variant b cache hit")
+
+    local alternate_bluespecdir = path.join(workroot, "fake-systemc-alternate-sdk")
+    active_bluesim_dir = path.join(alternate_bluespecdir, "Bluesim")
+    os.mkdir(active_bluesim_dir)
+    for _, file in ipairs(os.files(path.join(fake_build, "lib", "Bluesim", "*"))) do
+        os.cp(file, active_bluesim_dir)
+    end
+    active_envs = table.clone(envs)
+    active_envs.BLUESPECDIR = alternate_bluespecdir
+    configure_variant("b")
+    local _, identity_consumer = check_variant("b")
+    assert_contains(identity_consumer, "compiling.release consumer.cpp",
+        "BSC SDK identity change recompiles native consumer")
+    assert_consumer_cache_hit(run(projectdir, {"build", "consumer"}, {
+        context = "alternate BSC SDK native consumer cache hit",
+        envs = active_envs,
+    }), "alternate BSC SDK native consumer cache hit")
 end
 
 local function fake_bluetcl_events(logfile, context)

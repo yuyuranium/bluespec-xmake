@@ -112,13 +112,17 @@ int main(int argc, char **argv) {
         snprintf(header, sizeof(header), "%s/%s_systemc.h", simdir, top);
         snprintf(source_output, sizeof(source_output), "%s/%s_systemc.cpp", simdir, top);
         status = write_text(header,
-            "#pragma once\nint bluespec_xmake_fake_systemc(void);\n") == 0 ? 0 : 24;
+            "#pragma once\n"
+            "#include <bluesim_kernel_api.h>\n"
+            "int bluespec_xmake_fake_systemc(void);\n") == 0 ? 0 : 24;
         if (status == 0) {
             status = write_text(source_output,
+                "#include <bluesim_kernel_api.h>\n"
                 "#include <ordinary_marker.hpp>\n"
                 "#include <systemc.h>\n"
                 "int bluespec_xmake_fake_systemc(void) {\n"
-                "    return BLUESPEC_XMAKE_ORDINARY + BLUESPEC_XMAKE_SYSTEMC;\n"
+                "    return BLUESPEC_XMAKE_ORDINARY + BLUESPEC_XMAKE_SYSTEMC"
+                " + bk_fake_kernel();\n"
                 "}\n") == 0 ? 0 : 24;
         }
     } else if (status == 0 && strcmp(kind, "backend") == 0) {

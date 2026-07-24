@@ -93,7 +93,11 @@ the existing single-token behavior.
 Native C/C++ targets can be attached with ordinary `add_deps()`; Bluesim link
 jobs force-load direct and transitive static dependencies into the shared model
 and build those archives as PIC where the platform requires it.  SystemC
-targets publish generated includes plus the `systemc` link requirement.
+targets are ordinary native dependencies too: their PUBLIC interface exports
+the generated model headers, BSC's `Bluesim` SDK headers, the model archive,
+and the ordered `systemc`, `bskernel`, and `bsprim` runtime links.  A native
+consumer therefore only needs `add_deps()` and can include the generated
+`*_systemc.h` without discovering `BLUESPECDIR` or internal build paths.
 Generated BSV inputs must be emitted during Xmake's prepare phase (for example,
 by an `on_prepare` generator target); ordinary `on_build` generation happens
 after dependency scanning.  The generator should use

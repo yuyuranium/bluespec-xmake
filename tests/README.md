@@ -66,6 +66,12 @@ If the shell does not export the SDK paths automatically, set `CPATH` to the
 SystemC `include` directory and `LIBRARY_PATH` to its `lib` directory before
 the command.
 
+The regression suite also builds an ordinary C++ executable which depends on a
+`bluespec.systemc` target, includes its generated `*_systemc.h`, and links the
+model plus BSC's `bskernel`/`bsprim` runtime through the target's PUBLIC Xmake
+interface.  It checks link order, BSC SDK relocation invalidation, execution,
+and an unchanged native/Bluespec cache hit.
+
 The fixture intentionally has no external scanner or manifest-generation
 script.  Xmake's normal `.xmake`/dependfile state and the backend artifacts are
 the only files created by a build.
