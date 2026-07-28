@@ -1065,8 +1065,12 @@ local function test_systemc_package(root, workroot, run)
     end
     local function check_variant(variant)
         local context = "local SystemC package variant " .. variant
-        local output = run(projectdir, {"build", "model"}, {
-            context = context .. " model",
+        -- This must be the first build in a clean/configured builddir.  The
+        -- ordinary C++ consumer reaches the SystemC provider through a PUBLIC
+        -- phony aggregator and includes its generated header.  Building the
+        -- model first would hide a missing cross-target compile-order edge.
+        local output = run(projectdir, {"build", "consumer"}, {
+            context = context .. " clean native consumer closure",
             envs = active_envs,
         })
         assert_contains(output, "building Bluespec systemc model", context)
@@ -1097,15 +1101,11 @@ local function test_systemc_package(root, workroot, run)
             raise("%s: missing generated SystemC static archive %s", context,
                 tostring(targetfile))
         end
-        local consumer_output = run(projectdir, {"build", "consumer"}, {
-            context = context .. " native consumer",
-            envs = active_envs,
-        })
         assert_contains(run(projectdir, {"run", "consumer"}, {
             context = context .. " executable",
             envs = active_envs,
         }), "SYSTEMC_CONSUMER_OK", context .. " executable")
-        return output, consumer_output
+        return output
     end
 
     configure_variant("a")
@@ -1131,7 +1131,7 @@ local function test_systemc_package(root, workroot, run)
     active_envs = table.clone(envs)
     active_envs.BLUESPECDIR = alternate_bluespecdir
     configure_variant("b")
-    local _, identity_consumer = check_variant("b")
+    local identity_consumer = check_variant("b")
     assert_contains(identity_consumer, "compiling.release consumer.cpp",
         "BSC SDK identity change recompiles native consumer")
     assert_consumer_cache_hit(run(projectdir, {"build", "consumer"}, {

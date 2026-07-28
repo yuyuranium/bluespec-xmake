@@ -70,7 +70,9 @@ The regression suite also builds an ordinary C++ executable which depends on a
 `bluespec.systemc` target, includes its generated `*_systemc.h`, and links the
 model plus BSC's `bskernel`/`bsprim` runtime through the target's PUBLIC Xmake
 interface.  It checks link order, BSC SDK relocation invalidation, execution,
-and an unchanged native/Bluespec cache hit.
+and an unchanged native/Bluespec cache hit.  Its first clean command builds the
+consumer directly through a PUBLIC phony aggregator, proving that native object
+compilation waits until the generated SystemC headers exist.
 
 The fixture intentionally has no external scanner or manifest-generation
 script.  Xmake's normal `.xmake`/dependfile state and the backend artifacts are

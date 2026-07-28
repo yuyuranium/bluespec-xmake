@@ -97,7 +97,10 @@ targets are ordinary native dependencies too: their PUBLIC interface exports
 the generated model headers, BSC's `Bluesim` SDK headers, the model archive,
 and the ordered `systemc`, `bskernel`, and `bsprim` runtime links.  A native
 consumer therefore only needs `add_deps()` and can include the generated
-`*_systemc.h` without discovering `BLUESPECDIR` or internal build paths.
+`*_systemc.h` without discovering `BLUESPECDIR` or internal build paths.  The
+rule also applies Xmake's provider-side build fence, so a clean native consumer
+build waits for these generated public artifacts through direct or transitive
+(including phony aggregator) dependencies.
 Generated BSV inputs must be emitted during Xmake's prepare phase (for example,
 by an `on_prepare` generator target); ordinary `on_build` generation happens
 after dependency scanning.  The generator should use
