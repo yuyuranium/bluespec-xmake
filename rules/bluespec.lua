@@ -160,6 +160,23 @@ local function define_rule(name, backend, required_kind, needs_top)
                 if not target:get("filename") then
                     target:set("filename", target:name() .. ".f")
                 end
+                -- Generated RTL instantiates BSC-provided Verilog primitives
+                -- (registers, FIFOs, memories, and so on) without copying all
+                -- of their definitions into the target output directory.
+                -- Xmake has no HDL-library path field, so publish a narrowly
+                -- namespaced target value instead of misusing native include
+                -- or link directories.  The companion identity is opaque to
+                -- consumers and belongs in their depend values.
+                local toolset = import("bluespec.tools").tools()
+                local librarydir = path.normalize(path.absolute(
+                    path.join(toolset.bluespecdir, "Verilog")))
+                if not os.isdir(librarydir) then
+                    raise("BSC installation for target(%s) is missing its Verilog SDK in %s",
+                        target:name(), librarydir)
+                end
+                target:values_add("bluespec.verilog.sdk.librarydirs", librarydir, {public = true})
+                target:values_add("bluespec.verilog.sdk.identity",
+                    import("bluespec.tools").identity(), {public = true})
             end
             if needs_top then
                 util.top(target, true)

@@ -52,7 +52,11 @@ nix-shell --run 'xmake build -P tests/fixture rtl'
 `check` imports the `.bo` files produced by `common`; its output directory
 contains only `Check.bo`.  `rtl` exposes a sorted, absolute-path `rtl.f` as its
 standard Xmake targetfile (by default `build/Verilog/rtl.f`, listing
-`build/Verilog/rtl/*.v`).  `sim` also
+`build/Verilog/rtl/*.v`).  Its PUBLIC
+`bluespec.verilog.sdk.librarydirs` target value exposes the BSC primitive
+Verilog search directory without adding those files to `rtl.f`; the companion
+opaque `bluespec.verilog.sdk.identity` value supports downstream invalidation.
+`sim` also
 depends on the ordinary Xmake static target `native` (the same path used for
 BDPI libraries).  SystemC additionally needs a SystemC SDK in the compiler
 include/link paths:

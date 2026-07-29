@@ -54,9 +54,15 @@ target("rtl_consumer")
     set_kind("phony")
     add_deps("rtl")
     on_build(function(target)
-        local filelist = assert(target:dep("rtl"):targetfile())
+        local rtl = assert(target:dep("rtl"))
+        local filelist = assert(rtl:targetfile())
+        local librarydirs = table.wrap(assert(
+            rtl:values("bluespec.verilog.sdk.librarydirs")))
+        local sdk_identity = assert(
+            rtl:values("bluespec.verilog.sdk.identity"))
         local contents = assert(io.readfile(path.absolute(filelist)))
-        -- Process `contents` and its listed RTL with pure Xmake Lua.
+        -- Pass `contents` and `librarydirs` to the downstream HDL tool.
+        -- Include `sdk_identity` in that processing job's depend values.
     end)
 ```
 
@@ -177,7 +183,14 @@ filelist is the target's standard `targetfile()`; its default location is
 are respected.  Dependency consumers use `target:dep("rtl"):targetfile()` and
 never need internal target data or knowledge of `.gens` paths.  Filelist entries
 are sorted absolute paths to this public RTL directory and relocate with the
-builddir.  Internal BSC state follows the compiler's flag terminology: `bdir`
+builddir.  Generated RTL can instantiate BSC-provided primitive modules whose
+definitions are not copied into that filelist.  The Verilog target therefore
+publishes canonical absolute HDL library search directories through the PUBLIC
+Xmake value `bluespec.verilog.sdk.librarydirs`; its opaque
+`bluespec.verilog.sdk.identity` value lets a downstream dependfile follow the
+same BSC/`BLUESPECDIR` identity.  Consumers query both with `dep:values(...)`;
+neither value is a native C/C++ include or link flag.  Internal BSC state
+follows the compiler's flag terminology: `bdir`
 for `.bo`/`.ba`, `simdir` for Bluesim intermediates, and `info` for
 informational output.
 Package and backend dependfiles, graph cache, and Xmake's `.xmake` state are

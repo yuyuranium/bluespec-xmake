@@ -63,6 +63,32 @@ local function assert_verilog_filelist(filelist, artifactdir, context)
     return lines
 end
 
+local function assert_verilog_sdk(output, expected, context)
+    local directories = {}
+    for directory in strip_ansi(output):gmatch("processing BSC Verilog SDK ([^\r\n]+)") do
+        directory = path.normalize(directory)
+        if not path.is_absolute(directory) then
+            raise("%s: BSC Verilog SDK directory is not absolute: %s", context, directory)
+        end
+        if not os.isdir(directory) then
+            raise("%s: missing BSC Verilog SDK directory %s", context, directory)
+        end
+        if #os.files(path.join(directory, "*.v")) == 0 then
+            raise("%s: BSC Verilog SDK has no primitive .v files: %s", context, directory)
+        end
+        table.insert(directories, directory)
+    end
+    if #directories ~= 1 then
+        raise("%s: expected exactly one public BSC Verilog SDK directory, got %d",
+            context, #directories)
+    end
+    if expected and directories[1] ~= path.normalize(path.absolute(expected)) then
+        raise("%s: expected BSC Verilog SDK %s, got %s",
+            context, path.normalize(path.absolute(expected)), directories[1])
+    end
+    return directories[1]
+end
+
 local function artifact_contents(files, context)
     local contents = {}
     for _, file in ipairs(files or {}) do
@@ -530,11 +556,66 @@ local function test_backends(root, workroot, run)
     if io.readfile(processed) ~= io.readfile(default_filelist) then
         raise("downstream Xmake consumer did not process the public targetfile")
     end
+    local initial_sdk_dir = assert_verilog_sdk(rtl, nil, "public BSC Verilog SDK")
+    local processed_sdk = path.join(default_builddir, "processed", "rtl.sdk")
+    if (io.readfile(processed_sdk) or ""):gsub("[\r\n]+$", "") ~= initial_sdk_dir then
+        raise("downstream Xmake consumer did not record the public BSC Verilog SDK")
+    end
 
     local rtl_cached = run(projectdir, {"build", "rtl_consumer"},
         {context = "cached Verilog public artifact"})
     assert_bluespec_cache_hit(rtl_cached, "cached Verilog public artifact")
     assert_not_contains(rtl_cached, "processing Verilog targetfile", "cached Verilog consumer")
+    assert_not_contains(rtl_cached, "processing BSC Verilog SDK", "cached Verilog SDK consumer")
+
+    -- Relocate the complete BSC library tree and select it through the normal
+    -- BLUESPECDIR identity.  The public SDK path and opaque identity must make
+    -- the downstream consumer rebuild without changing the .f contract.
+    local initial_bluespecdir = path.directory(initial_sdk_dir)
+    local alternate_install = path.join(workroot, "alternate-verilog-install")
+    os.mkdir(alternate_install)
+    os.cp(initial_bluespecdir, alternate_install)
+    local alternate_bluespecdir = path.join(alternate_install, path.basename(initial_bluespecdir))
+    local alternate_sdk_dir = path.join(alternate_bluespecdir, "Verilog")
+    if not os.isfile(path.join(alternate_sdk_dir, "RegN.v")) then
+        raise("alternate BLUESPECDIR copy is missing Verilog primitives: %s", alternate_sdk_dir)
+    end
+    local alternate_envs = {BLUESPECDIR = alternate_bluespecdir}
+    run(projectdir, {"config", "-c"}, {
+        context = "configure alternate Verilog BLUESPECDIR",
+        envs = alternate_envs,
+    })
+    local sdk_changed = run(projectdir, {"build", "rtl_consumer"}, {
+        context = "alternate Verilog BLUESPECDIR invalidation",
+        envs = alternate_envs,
+    })
+    assert_contains(sdk_changed, "scanning Bluespec rtl", "alternate Verilog BLUESPECDIR")
+    assert_contains(sdk_changed, "compiling Bluespec package Top", "alternate Verilog BLUESPECDIR")
+    assert_contains(sdk_changed, "building Bluespec verilog rtl", "alternate Verilog BLUESPECDIR")
+    assert_verilog_sdk(sdk_changed, alternate_sdk_dir, "alternate public BSC Verilog SDK")
+    assert_verilog_filelist(default_filelist, default_rtl_dir,
+        "alternate-BLUESPECDIR Verilog targetfile")
+    local sdk_changed_cached = run(projectdir, {"build", "rtl_consumer"}, {
+        context = "cached alternate Verilog BLUESPECDIR",
+        envs = alternate_envs,
+    })
+    assert_bluespec_cache_hit(sdk_changed_cached, "cached alternate Verilog BLUESPECDIR")
+    assert_not_contains(sdk_changed_cached, "processing BSC Verilog SDK",
+        "cached alternate Verilog SDK consumer")
+
+    run(projectdir, {"config", "-c"}, {context = "restore default Verilog BLUESPECDIR"})
+    local sdk_restored = run(projectdir, {"build", "rtl_consumer"}, {
+        context = "restored default Verilog BLUESPECDIR",
+    })
+    assert_contains(sdk_restored, "building Bluespec verilog rtl",
+        "restored default Verilog BLUESPECDIR")
+    assert_verilog_sdk(sdk_restored, initial_sdk_dir, "restored public BSC Verilog SDK")
+    local sdk_restored_cached = run(projectdir, {"build", "rtl_consumer"}, {
+        context = "cached restored Verilog BLUESPECDIR",
+    })
+    assert_bluespec_cache_hit(sdk_restored_cached, "cached restored Verilog BLUESPECDIR")
+    assert_not_contains(sdk_restored_cached, "processing BSC Verilog SDK",
+        "cached restored Verilog SDK consumer")
 
     local projectfile = path.join(projectdir, "xmake.lua")
     local project_contents = assert(io.readfile(projectfile), "missing backend regression project")

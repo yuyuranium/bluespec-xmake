@@ -1,8 +1,19 @@
 set_project("bluespec-xmake-fake-bsc")
 set_languages("c11")
 
+local verilogdir = path.join(get_config("builddir"), "lib", "Verilog")
+
+target("verilog_sdk")
+    set_kind("phony")
+    on_build(function()
+        os.mkdir(verilogdir)
+        io.writefile(path.join(verilogdir, "RegN.v"),
+            "// fake Bluespec Verilog primitive\n")
+    end)
+
 target("bsc")
     set_kind("binary")
+    add_deps("verilog_sdk")
     add_files("fake_bsc.c")
     set_targetdir(path.join(get_config("builddir"), "bin"))
 
