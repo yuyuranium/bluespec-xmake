@@ -1389,6 +1389,95 @@ local function test_bsc_concurrency(root, workroot, run)
         return output, analysis
     end
 
+    -- Xmake 3.0.4 chooses the menu widget from the Lua type of an option's
+    -- default.  Numeric limits must therefore remain string-typed at the
+    -- public configuration boundary, then be parsed by bluespec.resources.
+    local default_build = path.join(projectdir, "build-default-resources")
+    local default_log = path.join(workroot, "fake-bsc-default-resources.log")
+    run(projectdir, {"config", "-c", "-o", default_build}, {
+        context = "configure default resource options",
+        envs = environment(default_log),
+    })
+    local metadata = run(projectdir, {"build", "resource_option_metadata"}, {
+        context = "resource option menu metadata",
+        envs = environment(default_log),
+    })
+    for name, default in pairs({
+        bluespec_backend_jobs = "1",
+        bluespec_bsc_jobs = "0",
+        bluespec_scan_jobs = "0",
+    }) do
+        assert_contains(metadata,
+            string.format("RESOURCE_OPTION name=%s type=string default=%s", name, default),
+            "resource option menu metadata")
+    end
+    local _, defaults = build_all(default_log, default_build, "default resource limits")
+    if defaults.maximum_backend ~= 1 then
+        raise("default resource limits: expected backend concurrency 1, got %d",
+            defaults.maximum_backend)
+    end
+
+    local explicit_build = path.join(projectdir, "build-explicit-resources")
+    local explicit_log = path.join(workroot, "fake-bsc-explicit-resources.log")
+    run(projectdir, {
+        "config", "-c", "-o", explicit_build,
+        "--bluespec_backend_jobs=4",
+        "--bluespec_bsc_jobs=4",
+        "--bluespec_scan_jobs=4",
+    }, {
+        context = "configure explicit numeric resource strings",
+        envs = environment(explicit_log),
+    })
+    for _, name in ipairs({"backend", "bsc", "scan"}) do
+        run(projectdir, {"build", "resource_" .. name .. "_probe"}, {
+            context = "explicit numeric " .. name .. " resource option",
+            envs = environment(explicit_log),
+        })
+    end
+
+    local function assert_invalid_resource(name, value, probe, label)
+        local builddir = path.join(projectdir, "build-invalid-" .. label)
+        local logfile = path.join(workroot, "fake-bsc-invalid-" .. label .. ".log")
+        run(projectdir, {
+            "config", "-c", "-o", builddir,
+            "--" .. name .. "=" .. value,
+        }, {
+            context = "configure invalid " .. label .. " resource option",
+            envs = environment(logfile),
+        })
+        local output = run(projectdir, {"build", "resource_" .. probe .. "_probe"}, {
+            context = "invalid " .. label .. " resource option",
+            envs = environment(logfile),
+            fail = true,
+        })
+        assert_contains(output,
+            "--" .. name .. " requires a non-negative integer, got " .. value,
+            "invalid " .. label .. " resource option")
+    end
+    assert_invalid_resource("bluespec_bsc_jobs", "true", "bsc", "boolean")
+    assert_invalid_resource("bluespec_backend_jobs", "-1", "backend", "negative")
+    assert_invalid_resource("bluespec_bsc_jobs", "1.5", "bsc", "fractional")
+    assert_invalid_resource("bluespec_scan_jobs", "many", "scan", "nonnumeric")
+
+    local cached_boolean_build = path.join(projectdir, "build-cached-boolean")
+    local cached_boolean_log = path.join(workroot, "fake-bsc-cached-boolean.log")
+    run(projectdir, {"config", "-c", "-o", cached_boolean_build}, {
+        context = "configure cached boolean resource option",
+        envs = environment(cached_boolean_log),
+    })
+    run(projectdir, {"build", "seed_boolean_resource_option"}, {
+        context = "seed legacy boolean resource option",
+        envs = environment(cached_boolean_log, {BLUESPEC_FAKE_SEED_BOOLEAN = "1"}),
+    })
+    local cached_boolean = run(projectdir, {"build", "resource_bsc_probe"}, {
+        context = "legacy cached boolean resource option",
+        envs = environment(cached_boolean_log),
+        fail = true,
+    })
+    assert_contains(cached_boolean,
+        "--bluespec_bsc_jobs requires a non-negative integer, got true",
+        "legacy cached boolean resource option")
+
     local capped_build = path.join(projectdir, "build-backend-two")
     local capped_log = path.join(workroot, "fake-bsc-backend-two.log")
     configure_case(capped_build, 2, 0, capped_log, true)

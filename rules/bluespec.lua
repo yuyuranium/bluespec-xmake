@@ -3,17 +3,21 @@
 add_moduledirs(path.join(os.scriptdir(), "../modules"))
 
 option("bluespec_backend_jobs")
-    set_default(1)
+    -- Xmake 3.0.4's menu adapter treats every non-string project-option
+    -- default as a boolean checkbox.  Keep numeric resource limits as strings
+    -- at the description/config boundary; bluespec.resources validates and
+    -- converts them before scheduling work.
+    set_default("1")
     set_showmenu(true)
     set_description("Maximum concurrent Bluespec backend elaborations (0 inherits Xmake -j)")
 
 option("bluespec_bsc_jobs")
-    set_default(0)
+    set_default("0")
     set_showmenu(true)
     set_description("Maximum concurrent BSC processes, including package compiles (0 inherits Xmake -j)")
 
 option("bluespec_scan_jobs")
-    set_default(0)
+    set_default("0")
     set_showmenu(true)
     set_description("Maximum concurrent Bluetcl dependency scans (0 inherits Xmake -j)")
 

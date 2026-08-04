@@ -4,13 +4,20 @@ local scheduler = import("core.base.scheduler")
 local pools = {}
 
 local function configured_limit(name, default)
-    local value = config.get(name)
-    if value == nil or value == "" then
-        value = default
+    local configured = config.get(name)
+    local raw = configured
+    if raw == nil or raw == "" then
+        raw = default
     end
-    value = tonumber(value)
+    -- Do not pass a legacy menu-saved boolean to tonumber().  Besides being
+    -- invalid resource semantics, Lua runtimes differ in the diagnostic they
+    -- produce for tonumber(true).  Always report the public option error.
+    local value
+    if type(raw) == "string" or type(raw) == "number" then
+        value = tonumber(raw)
+    end
     if not value or value < 0 or value ~= math.floor(value) then
-        raise("--%s requires a non-negative integer, got %s", name, tostring(config.get(name)))
+        raise("--%s requires a non-negative integer, got %s", name, tostring(configured))
     end
     return value
 end
