@@ -6,6 +6,8 @@ for index = 1, 4 do
         add_rules("bluespec.verilog")
         set_bsc_root(path.join("src", "Top" .. index .. ".bsv"))
         set_bsc_top("mkTop" .. index)
+        -- Each endpoint owns an imported package job as well as its top job.
+        add_bsc_package_dirs("src")
 end
 
 local function define_resource_probe(name)
