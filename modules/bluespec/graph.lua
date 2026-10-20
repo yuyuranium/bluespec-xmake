@@ -70,6 +70,19 @@ local function dep_graphs(target)
     return result
 end
 
+local function provider_source_dirs(graph)
+    local dirs = {}
+    for name, package in pairs(graph.packages or {}) do
+        if graph.exports[name] and package.source then
+            table.insert(dirs, path.directory(package.source))
+        end
+    end
+    for _, provider in pairs(graph.providers or {}) do
+        if provider.source then table.insert(dirs, path.directory(provider.source)) end
+    end
+    return util.unique_sorted(dirs)
+end
+
 local function effective_config(target, deps)
     local dirs, own_defines, own_options, own_link_options = own_config(target)
     local effective_dirs = {}
@@ -131,6 +144,13 @@ local function effective_config(target, deps)
         -- package compilation continues to consume only provider .bo files.
         append(scanner_dirs, graph.exported_dirs)
         append(dependency_exported_dirs, graph.exported_dirs)
+        -- A library exports its owned packages even when their source search
+        -- paths are private. Before its first .bo exists, Bluetcl otherwise
+        -- silently omits imports of those packages. Expose their source dirs
+        -- only to scanning; finalize still validates the actual providers.
+        local source_dirs = provider_source_dirs(graph)
+        append(scanner_dirs, source_dirs)
+        append(dependency_exported_dirs, source_dirs)
         append(effective_defines, graph.exported_defines)
         append_groups(effective_option_groups, graph_exported_option_groups(graph))
         append(effective_link_options, graph.exported_link_options)
@@ -180,6 +200,7 @@ local function declared_exports(target, visiting)
         defines = {},
         option_groups = {},
         library_outputs = {},
+        scan_dirs = {},
     }
     append(result.dirs, dirs.public)
     append(result.dirs, dirs.interface)
@@ -189,6 +210,9 @@ local function declared_exports(target, visiting)
     append_groups(result.option_groups, option_groups.interface)
     if data(target, "bluespec.rule") == "bluespec.library" then
         table.insert(result.library_outputs, util.bdir(target))
+        -- A declaration-only superset of the eventual exported package
+        -- source dirs keeps scan cohorts sensitive to private library paths.
+        append(result.scan_dirs, dirs.all)
     end
     for _, dep in ipairs(ordered_deps(target)) do
         if is_bluespec(dep) then
@@ -197,12 +221,14 @@ local function declared_exports(target, visiting)
             append(result.defines, exported.defines)
             append_groups(result.option_groups, exported.option_groups)
             append(result.library_outputs, exported.library_outputs)
+            append(result.scan_dirs, exported.scan_dirs)
         end
     end
     visiting[target_name] = nil
     result.dirs = util.unique_sorted(result.dirs)
     result.defines = util.unique_sorted(result.defines)
     result.library_outputs = util.unique_sorted(result.library_outputs)
+    result.scan_dirs = util.unique_sorted(result.scan_dirs)
     declared_exports_cache[target_name] = result
     return result
 end
@@ -225,13 +251,14 @@ local function scan_cohort_key(target)
             local exported = declared_exports(dep)
             append(effective_dirs, exported.library_outputs)
             append(scanner_dirs, exported.dirs)
+            append(scanner_dirs, exported.scan_dirs)
             append(effective_defines, exported.defines)
             append_groups(effective_option_groups, exported.option_groups)
         end
     end
     append(scanner_dirs, effective_dirs)
     return table.concat({
-        "bluespec-scan-cohort-v1",
+        "bluespec-scan-cohort-v2",
         "root=" .. util.canonical_root(target),
         "search=" .. table.concat(util.unique_sorted(scanner_dirs), "\n"),
         "defines=" .. table.concat(util.unique_sorted(effective_defines), "\n"),
@@ -466,7 +493,7 @@ local function finalize(target, parsed, config, deps)
     })
 
     return {
-        schema = 8,
+        schema = 9,
         target = target:fullname(),
         root = parsed.root,
         root_name = parsed.root_name,

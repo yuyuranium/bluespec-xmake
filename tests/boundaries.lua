@@ -54,6 +54,18 @@ function main()
 
     run({"config", "-c", "-y", "--bluespec_backend_jobs=1", "--bluespec_bsc_jobs=1",
         "--bluespec_scan_jobs=1", "--bluespec_trace_bsc=y"})
+    -- No provider .bo exists during the first prepare phase. Its exported
+    -- packages must still appear in the consumer's scan, even though their
+    -- source directory is private and compilation only accepts provider .bo.
+    local cold = run({"build", "-j1", "sim_a"})
+    assert(cold:find("provider/bluespec/sim/package/Child", 1, true),
+        "cold consumer did not schedule its imported provider package: " .. cold)
+    assert(run({"run", "sim_a"}):find("BOUNDARY_OK", 1, true),
+        "cold consumer did not execute its imported synthesized child")
+    -- Reset artifacts before the separate prebuilt-provider/partial-scan case.
+    os.rm(path.join(project, "build"))
+    run({"config", "-c", "-y", "--bluespec_backend_jobs=1", "--bluespec_bsc_jobs=1",
+        "--bluespec_scan_jobs=1", "--bluespec_trace_bsc=y"})
     -- A prebuilt provider lets Bluetcl report only an imported .bo edge,
     -- omitting that package's source rule from a consumer's partial closure.
     run({"build", "-j1", "provider"})
