@@ -372,7 +372,7 @@ end
 function package_args(target, graph, package, backend)
     local toolset = tools()
     local args = {}
-    local outdir = graph.output_dir
+    local outdir = package and package.output_dir or graph.output_dir
     local dirs = {}
     for _, dir in ipairs(graph.search_dirs or {}) do
         table.insert(dirs, dir)
@@ -388,7 +388,7 @@ function package_args(target, graph, package, backend)
     table.insert(args, "-bdir")
     table.insert(args, outdir)
     table.insert(args, "-info-dir")
-    table.insert(args, util.infodir(target))
+    table.insert(args, package and package.info_dir or graph.info_dir or util.infodir(target))
     table.insert(args, "-p")
     table.insert(args, util.concat_path_list(dirs))
     for _, define in ipairs(graph.effective_defines or {}) do
@@ -404,6 +404,14 @@ function package_args(target, graph, package, backend)
         table.insert(args, "-verilog")
     elseif backend == "systemc" then
         table.insert(args, "-systemc")
+    end
+    if graph.flavor and package then
+        table.insert(args, graph.flavor == "sim" and "-sim" or "-verilog")
+        table.insert(args, "-elab")
+        if graph.flavor == "verilog" then
+            table.insert(args, "-vdir")
+            table.insert(args, package.rtl_dir)
+        end
     end
     if package then
         table.insert(args, package.source)

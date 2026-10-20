@@ -26,6 +26,20 @@ This checks conditional imports with Haskell RTS options, preserves the BSC
 compile arguments, rejects Tcl failures, and invalidates raw/parsed graph caches
 when the scanner contract changes.
 
+For serial, real-BSC synthesis boundary checks:
+
+```sh
+xmake lua tests/boundaries.lua
+```
+
+This builds and runs two Bluesim consumers sharing a synthesized dependency,
+checks the self-contained public Verilog closure, and verifies cache hits,
+missing `.ba`/`.v` recovery, and removal of stale synthesized children.
+The provider is built before consumers and keeps its source paths private,
+covering partial scanner closures containing only imported `.bo` edges. A
+consumer with the library's root source also verifies that its private defines
+select its own elaboration rather than the provider's prebuilt `.ba`.
+
 The runner is implemented in Xmake Lua and uses isolated copies below
 `build/regression`.  It covers package-level reverse-dependency invalidation,
 dynamic import edge changes, dependency `.bo` reuse, generated BSV input/config

@@ -1847,6 +1847,9 @@ function main()
         {"scanner flags/errors/cache identity", function()
             import("scanner", {rootdir = path.join(root, "tests")}).main()
         end},
+        {"synthesis boundaries/output recovery", function()
+            import("boundaries", {rootdir = path.join(root, "tests")}).main()
+        end},
         {"declaration-relative path APIs", function() test_path_relative(root, workroot, run) end},
         {"incremental graph/cache", function() test_incremental(root, workroot, run) end},
         {"generated BSV", function() test_generated(root, workroot, run) end},
