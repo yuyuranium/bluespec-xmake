@@ -1841,6 +1841,9 @@ function main()
     os.mkdir(workroot)
     local run = runner(root, workroot)
     local tests = {
+        {"dependency parser/include inputs", function()
+            import("parser", {rootdir = path.join(root, "tests")}).main()
+        end},
         {"declaration-relative path APIs", function() test_path_relative(root, workroot, run) end},
         {"incremental graph/cache", function() test_incremental(root, workroot, run) end},
         {"generated BSV", function() test_generated(root, workroot, run) end},

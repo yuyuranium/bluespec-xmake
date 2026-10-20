@@ -6,6 +6,15 @@ Run the automated regression suite inside the development shell:
 nix-shell --run 'xmake regression'
 ```
 
+For the dependency parser alone, without compilation or parallel build jobs:
+
+```sh
+xmake lua tests/parser.lua
+```
+
+This checks textual `.bsv` includes, primary-source selection, and explicit or
+implicit source-only packages in partial dependency closures.
+
 The runner is implemented in Xmake Lua and uses isolated copies below
 `build/regression`.  It covers package-level reverse-dependency invalidation,
 dynamic import edge changes, dependency `.bo` reuse, generated BSV input/config

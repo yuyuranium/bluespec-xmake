@@ -466,7 +466,7 @@ local function finalize(target, parsed, config, deps)
     })
 
     return {
-        schema = 7,
+        schema = 8,
         target = target:fullname(),
         root = parsed.root,
         root_name = parsed.root_name,
