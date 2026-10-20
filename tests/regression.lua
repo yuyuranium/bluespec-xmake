@@ -536,7 +536,8 @@ local function test_backends(root, workroot, run)
     assert_file(executable .. ".so", "Bluesim shared object")
     local initial_sim_output = run(projectdir, {"run", "sim"}, {context = "xmake run sim"})
     assert_contains(initial_sim_output, "BACKEND_VALUE=1", "initial Bluesim behavior")
-    local sim_ba = assert_single_file(path.join(projectdir, "build", "**", "bdir", "mkTop.ba"),
+    local sim_ba = assert_single_file(path.join(projectdir, "build", ".gens", "sim", "**",
+        "bluespec", "elaboration", "sim", "mkTop.ba"),
         "initial Bluesim elaboration artifact")
     local initial_sim_ba = assert(io.readfile(sim_ba), "missing initial Bluesim .ba")
     local sim_cached = run(projectdir, {"build", "sim"}, {context = "cached Bluesim build"})
@@ -803,7 +804,8 @@ local function test_native_bdpi_builddir(root, workroot, run)
     assert_contains(initial, "-fPIC", "native BDPI PIC build")
 
     local builddir = path.join(projectdir, "build")
-    local old_bo = assert_single_file(path.join(builddir, "**", "bdir", "NativeBDPI.bo"),
+    local old_bo = assert_single_file(path.join(builddir, ".gens", "native_bdpi", "**",
+        "bluespec", "packages", "sim", "NativeBDPI", "NativeBDPI.bo"),
         "default builddir package")
     local old_golden = assert_single_file(path.join(builddir, "**", "libgolden.a"),
         "direct native archive")
@@ -853,7 +855,8 @@ local function test_native_bdpi_builddir(root, workroot, run)
     assert_not_contains(alt, path.directory(old_bo), "alt builddir package command")
 
     local alt_builddir = path.join(projectdir, "alt-build")
-    local alt_bo = assert_single_file(path.join(alt_builddir, "**", "bdir", "NativeBDPI.bo"),
+    local alt_bo = assert_single_file(path.join(alt_builddir, ".gens", "native_bdpi", "**",
+        "bluespec", "packages", "sim", "NativeBDPI", "NativeBDPI.bo"),
         "alt builddir package")
     assert_single_file(path.join(alt_builddir, "**", "libgolden.a"), "alt direct native archive")
     assert_single_file(path.join(alt_builddir, "**", "libgolden_helper.a"), "alt transitive native archive")
@@ -936,7 +939,8 @@ local function test_bsc_native_toolchain(root, workroot, run)
         context = "run hostile-environment Bluesim",
         envs = {CC = hostile, CXX = hostile},
     }), "TOOLCHAIN_OK", "run hostile-environment Bluesim")
-    local package_bo = assert_single_file(path.join(projectdir, "build", "**", "bdir", "ToolchainTop.bo"),
+    local package_bo = assert_single_file(path.join(projectdir, "build", ".gens", "toolchain_sim", "**",
+        "bluespec", "packages", "sim", "ToolchainTop", "ToolchainTop.bo"),
         "toolchain package output")
     local model = assert_single_file(path.join(projectdir, "build", "**", "simdir", "model_mkToolchainTop.cxx"),
         "toolchain generated model")
@@ -1023,10 +1027,14 @@ local function analyze_fake_bsc(logfile, context, opt)
     local events = fake_bsc_events(logfile, context)
     for _, event in ipairs(events) do
         local key = table.concat({event.target, event.kind, event.phase or ""}, "|")
+        -- Flavored package compilation elaborates synthesis boundaries and
+        -- shares the backend semaphore with final model generation.
+        local uses_backend = event.kind == "backend" or
+            event.phase == "package-sim" or event.phase == "package-verilog"
         if event.event == "start" then
             active = active + 1
             maximum = math.max(maximum, active)
-            if event.kind == "backend" then
+            if uses_backend then
                 active_backend = active_backend + 1
                 maximum_backend = math.max(maximum_backend, active_backend)
             end
@@ -1041,7 +1049,7 @@ local function analyze_fake_bsc(logfile, context, opt)
             starts[key] = (starts[key] or 0) + 1
         elseif event.event == "end" then
             active = active - 1
-            if event.kind == "backend" then
+            if uses_backend then
                 active_backend = active_backend - 1
             end
             local target_active = active_by_target[event.target] or {}
@@ -1488,7 +1496,7 @@ local function test_bsc_concurrency(root, workroot, run)
     end
     for index = 1, 4 do
         local target = "rtl" .. index
-        local package_key = table.concat({target, "package", "package"}, "|")
+        local package_key = table.concat({target, "package", "package-verilog"}, "|")
         local backend_key = table.concat({target, "backend", "verilog-generate"}, "|")
         if capped.starts[package_key] ~= 1 or capped.starts[backend_key] ~= 1 then
             raise("cross-target backend cap: target(%s) was not scheduled exactly once (package=%s backend=%s)",
@@ -1859,6 +1867,9 @@ function main()
         {"target CXX selection/cache identity", function() test_cxx_driver(root, workroot, run) end},
         {"BSC native toolchain identity", function() test_bsc_native_toolchain(root, workroot, run) end},
         {"SystemC native package propagation", function() test_systemc_package(root, workroot, run) end},
+        {"SystemC synthesized module isolation", function()
+            import("systemc_isolation", {rootdir = path.join(root, "tests")}).main()
+        end},
         {"project-wide BSC/backend concurrency", function() test_bsc_concurrency(root, workroot, run) end},
         {"cross-target Bluetcl scan concurrency", function() test_scan_concurrency(root, workroot, run) end},
         {"Bluespec rule kind ownership", function() test_kind_ownership(root, workroot, run) end},
