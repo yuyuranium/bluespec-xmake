@@ -73,6 +73,7 @@ function fingerprint(target, inputs, config)
         "schema=8",
         "target=" .. target_key(target),
         "bsc=" .. tools.identity(),
+        "scanner=" .. tools.scanner_identity(),
         "bsc-execution=" .. tools.execution_identity(target),
     }
     for _, value in ipairs(config or {}) do

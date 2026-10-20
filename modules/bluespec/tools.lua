@@ -63,7 +63,25 @@ local function quote_tcl(value)
     value = value:gsub("%$", "\\$")
     value = value:gsub("%[", "\\[")
     value = value:gsub("%]", "\\]")
+    -- Commands are also nested in a braced catch script below.
+    value = value:gsub("{", "\\{"):gsub("}", "\\}")
     return "\"" .. value .. "\""
+end
+
+local function scanner_options(options)
+    local result = {}
+    local runtime = false
+    for _, option in ipairs(util.list(options)) do
+        option = tostring(option)
+        if option == "+RTS" then
+            runtime = true
+        elseif option == "-RTS" then
+            runtime = false
+        elseif not runtime and option ~= "" then
+            table.insert(result, option)
+        end
+    end
+    return result
 end
 
 local function run_quiet(program, args, options)
@@ -205,7 +223,7 @@ end
 function scanner_identity()
     local toolset = tools()
     return table.concat({
-        "bluespec-scanner-v1",
+        "bluespec-scanner-v2",
         path.normalize(path.absolute(toolset.bsc)),
         program_stamp(toolset.bsc),
         path.normalize(path.absolute(toolset.bluetcl)),
@@ -298,10 +316,10 @@ function run_depend(target, root, package_dirs, defines, options, opt)
         table.insert(flags, "-D")
         table.insert(flags, tostring(define))
     end
-    for _, option in ipairs(util.list(options)) do
-        if tostring(option) ~= "" then
-            table.insert(flags, tostring(option))
-        end
+    -- RTS controls the bsc executable's Haskell runtime, not preprocessing.
+    -- Bluetcl rejects these arguments and would discard the defines as well.
+    for _, option in ipairs(scanner_options(options)) do
+        table.insert(flags, option)
     end
     if #flags > 0 then
         local command = "Bluetcl::flags set"
@@ -311,12 +329,14 @@ function run_depend(target, root, package_dirs, defines, options, opt)
         table.insert(commands, command)
     end
     table.insert(commands, "puts [Bluetcl::depend make " .. quote_tcl(root) .. "]")
-    table.insert(commands, "exit")
 
     -- Bluetcl is a Tcl API, but the process is driven entirely by Xmake Lua.
     -- The input file is an ephemeral stdin buffer and is removed immediately.
     local input = os.tmpfile()
-    io.writefile(input, table.concat(commands, "\n") .. "\n")
+    -- Interactive Tcl otherwise reports an error, continues to the next line,
+    -- and can return a successful scan made with partially configured flags.
+    io.writefile(input, "if {[catch {\n" .. table.concat(commands, "\n")
+        .. "\n} scan_error]} {\n  puts stderr $scan_error\n  exit 1\n}\nexit 0\n")
     local output, errors
     local succeeded = try {
         function()

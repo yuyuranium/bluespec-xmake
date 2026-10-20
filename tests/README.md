@@ -15,6 +15,17 @@ xmake lua tests/parser.lua
 This checks textual `.bsv` includes, primary-source selection, and explicit or
 implicit source-only packages in partial dependency closures.
 
+For real Bluetcl flag/error handling and scanner cache identity, without BSC
+compilation:
+
+```sh
+xmake lua tests/scanner.lua
+```
+
+This checks conditional imports with Haskell RTS options, preserves the BSC
+compile arguments, rejects Tcl failures, and invalidates raw/parsed graph caches
+when the scanner contract changes.
+
 The runner is implemented in Xmake Lua and uses isolated copies below
 `build/regression`.  It covers package-level reverse-dependency invalidation,
 dynamic import edge changes, dependency `.bo` reuse, generated BSV input/config
