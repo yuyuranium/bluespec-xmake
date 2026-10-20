@@ -55,6 +55,14 @@ local function package_view(target, graph, flavor)
     view.base_fingerprint = graph.fingerprint
     view.fingerprint = graph.fingerprint .. "|" .. package_flavor_contract .. "|" .. flavor
     view.packages, view.providers, view.provider_views, view.package_dirs = {}, {}, {}, {}
+    view.owned = table.clone(graph.owned)
+    -- An endpoint root is compiled with -g in its private elaboration job.
+    -- Without that top context, otherwise valid modules can be too general
+    -- for a fixed Module child. Imported library packages retain their jobs.
+    if target:data("bluespec.rule") ~= "bluespec.library" then
+        view.owned[graph.root_name] = nil
+        view.fingerprint = view.fingerprint .. "|bluespec-endpoint-root-v1"
+    end
     views[flavor] = view
     target:data_set("bluespec.package_views", views)
     local removed_dirs = {[path.normalize(graph.output_dir)] = true}
@@ -64,7 +72,7 @@ local function package_view(target, graph, flavor)
         required[name] = true
         for dep in pairs(package.deps or {}) do required[dep] = true end
         view.packages[name] = table.clone(package)
-        if graph.owned[name] then
+        if view.owned[name] then
             local owned = view.packages[name]
             owned.output_dir = path.join(util.state_dir(target), "packages", flavor, name)
             owned.bo = path.join(owned.output_dir, name .. ".bo")
@@ -72,6 +80,9 @@ local function package_view(target, graph, flavor)
             owned.rtl_dir = path.join(owned.output_dir, "rtl")
             owned.manifest = path.join(owned.output_dir, "outputs.lua")
             table.insert(view.package_dirs, owned.output_dir)
+        elseif graph.owned[name] then
+            -- Do not track a phantom intermediate .bo for the endpoint root.
+            view.packages[name].bo = nil
         end
     end
     for name, provider in pairs(graph.providers or {}) do
@@ -604,6 +615,12 @@ end
 
 local function backend_inputs(target, graph)
     local files = {}
+    -- Top compilation consumes its source and textual includes directly,
+    -- including when a library also provides this source under other flags.
+    table.insert(files, graph.root)
+    local root = graph.packages[graph.root_name]
+    for source in pairs(root and root.sources or {}) do table.insert(files, source) end
+    for input in pairs(root and root.inputs or {}) do table.insert(files, input) end
     for _, package in pairs(graph.packages or {}) do
         if package.bo then
             table.insert(files, package.bo)

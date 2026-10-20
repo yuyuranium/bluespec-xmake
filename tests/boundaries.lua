@@ -93,6 +93,26 @@ function main()
     public_rtl(true)
     cache_hit()
 
+    -- Endpoint roots have no package compile job: their direct source and
+    -- include inputs must still invalidate the private top elaboration.
+    local top = path.join(project, "src/consumer/Top.bsv")
+    local include = path.join(project, "src/consumer/Value.bsvh")
+    os.sleep(1100)
+    io.writefile(include, "`define FINISH_COUNT 4\n")
+    local include_changed = run({"build", "-j1", "all"})
+    assert(not include_changed:find("compiling Bluespec package Child", 1, true),
+        "endpoint include rebuilt a provider package")
+    assert(run({"run", "sim_a"}):find("BOUNDARY_OK count=4", 1, true),
+        "endpoint include change did not reach the executable")
+    cache_hit()
+    os.sleep(1100)
+    local updated = assert(io.readfile(top)):gsub("BOUNDARY_OK", "BOUNDARY_UPDATED")
+    io.writefile(top, updated)
+    run({"build", "-j1", "all"})
+    assert(run({"run", "sim_a"}):find("BOUNDARY_UPDATED count=4", 1, true),
+        "endpoint source change did not reach the executable")
+    cache_hit()
+
     -- Remove the synthesized boundary while keeping the same package/module.
     -- No stale private child may leak back into the public consumer filelist.
     local source = path.join(project, "src/provider/Child.bsv")

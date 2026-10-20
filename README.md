@@ -204,7 +204,9 @@ are rebuilt and removed modules cannot survive a recompilation. Every variant
 is a native package job; imports consume provider outputs rather than
 recompiling provider sources. Endpoint top elaboration uses a separate
 `elaboration/<flavor>` directory, including when its root source belongs to a
-library. Verilog consumers copy their synthesized dependency closure into the
+library. An endpoint-owned root is compiled only there, with its explicit top
+context; its source and textual includes directly invalidate the backend.
+Verilog consumers copy their synthesized dependency closure into the
 public RTL directory before writing the filelist. `simdir` contains Bluesim
 intermediates, and `info` contains informational output.
 
