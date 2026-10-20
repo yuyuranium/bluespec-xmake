@@ -113,6 +113,7 @@ local function effective_config(target, deps)
     append(exported_link_options, own_link_options.interface)
     local dep_contexts = {}
     local dependency_exported_dirs = {}
+    local dependency_scan_source_dirs = {}
     local scanner_dirs = {}
     for _, item in ipairs(deps) do
         local graph = item.graph
@@ -150,7 +151,7 @@ local function effective_config(target, deps)
         -- only to scanning; finalize still validates the actual providers.
         local source_dirs = provider_source_dirs(graph)
         append(scanner_dirs, source_dirs)
-        append(dependency_exported_dirs, source_dirs)
+        append(dependency_scan_source_dirs, source_dirs)
         append(effective_defines, graph.exported_defines)
         append_groups(effective_option_groups, graph_exported_option_groups(graph))
         append(effective_link_options, graph.exported_link_options)
@@ -176,6 +177,7 @@ local function effective_config(target, deps)
         exported_options = util.flatten_option_groups(exported_option_groups),
         exported_link_options = util.unique_sorted(exported_link_options),
         dependency_exported_dirs = util.unique_sorted(dependency_exported_dirs),
+        dependency_scan_source_dirs = util.unique_sorted(dependency_scan_source_dirs),
         dep_contexts = util.sorted(dep_contexts),
     }
 end
@@ -442,7 +444,12 @@ local function finalize(target, parsed, config, deps)
                         name, provider.target_name, target:name(), package.source)
                 end
             end
-        elseif package.source and is_under(package.source, config.dependency_exported_dirs) then
+        elseif package.source and (is_under(package.source, config.dependency_exported_dirs) or
+            (is_under(package.source, config.dependency_scan_source_dirs) and
+                not is_under(package.source, config.own_dirs))) then
+            -- Explicit public directories retain dependency ownership. A
+            -- private scan hint only fences otherwise unowned source paths:
+            -- providers and consumers can own distinct colocated packages.
             raise("package %s is located in a dependency package directory but is not exported by that target", name)
         elseif builtin[name] then
             if package.source and not is_under(package.source, tools.builtin_dirs()) then
@@ -517,6 +524,7 @@ local function finalize(target, parsed, config, deps)
         exported_options = config.exported_options,
         exported_link_options = config.exported_link_options,
         dependency_exported_dirs = config.dependency_exported_dirs,
+        dependency_scan_source_dirs = config.dependency_scan_source_dirs,
         dep_contexts = config.dep_contexts,
         fingerprint = fingerprint,
     }

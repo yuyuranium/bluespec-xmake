@@ -7,7 +7,7 @@ function main()
     os.cp(path.join(root, "tests/cases/synthesis_boundaries"), work)
     local project = path.join(work, "synthesis_boundaries")
     local sequence = 0
-    local function run(arguments)
+    local function run(arguments, expected_error)
         sequence = sequence + 1
         local stdout = path.join(work, tostring(sequence) .. ".out")
         local stderr = path.join(work, tostring(sequence) .. ".err")
@@ -19,7 +19,12 @@ function main()
             stdout = stdout, stderr = stderr, try = true,
         })
         local output = (io.readfile(stdout) or "") .. (io.readfile(stderr) or "")
-        assert(code == 0, "boundary fixture failed; logs in " .. work .. "\n" .. output)
+        if expected_error then
+            assert(code ~= 0 and output:find(expected_error, 1, true),
+                "expected boundary rejection; logs in " .. work .. "\n" .. output)
+        else
+            assert(code == 0, "boundary fixture failed; logs in " .. work .. "\n" .. output)
+        end
         return output
     end
     local function one(pattern)
@@ -51,6 +56,23 @@ function main()
         assert(table.concat(files, "\n") == table.concat(sorted, "\n"), "unsorted RTL filelist")
         return path.join(directory, "mkChild.v")
     end
+
+    -- Provider and consumer may own separate packages in the same directory.
+    -- A scan hint is not a public source-directory ownership declaration.
+    local boundaries = project
+    os.cp(path.join(root, "tests/cases/scan_concurrency"), work)
+    project = path.join(work, "scan_concurrency")
+    io.writefile(path.join(project, "src/Local.bsv"),
+        "package Local; function Bit#(1) localValue = 1; endpackage\n")
+    local consumer = path.join(project, "src/Consumer.bsv")
+    io.writefile(consumer, (assert(io.readfile(consumer)):gsub(
+        "import Provider::%*;", "import Provider::*;\nimport Local::*;")))
+    run({"config", "-c", "-y", "--bluespec_backend_jobs=1", "--bluespec_bsc_jobs=1",
+        "--bluespec_scan_jobs=1"})
+    run({"build", "-j1", "consumer1"})
+    one("**/packages/verilog/Local/Local.bo")
+    one("Verilog/consumer1.f")
+    project = boundaries
 
     run({"config", "-c", "-y", "--bluespec_backend_jobs=1", "--bluespec_bsc_jobs=1",
         "--bluespec_scan_jobs=1", "--bluespec_trace_bsc=y"})
@@ -137,6 +159,25 @@ function main()
     assert(not os.isfile(public_child), "stale public synthesized module survived")
     public_rtl(false)
     cache_hit()
+
+    -- Seeing a provider's source dir during scanning must not export a
+    -- neighboring package that the library never owned. It is outside the
+    -- consumer's own source dirs, so accepting it would leak private sources.
+    io.writefile(path.join(project, "src/provider/Hidden.bsv"),
+        "package Hidden; function Bit#(1) hiddenValue = 1; endpackage\n")
+    io.writefile(top, (assert(io.readfile(top)):gsub(
+        "import Child::%*;", "import Child::*;\nimport Hidden::*;")))
+    run({"build", "-j1", "sim_a"},
+        "package Hidden is located in a dependency package directory but is not exported")
+
+    -- Explicit public-dir ownership retains its existing stricter guardian,
+    -- even if the consumer also declares that directory as a source path.
+    os.cp(path.join(root, "tests/cases/unexported_package"), work)
+    project = path.join(work, "unexported_package")
+    run({"config", "-c", "-y", "--bluespec_backend_jobs=1", "--bluespec_bsc_jobs=1",
+        "--bluespec_scan_jobs=1"})
+    run({"build", "-j1", "consumer"},
+        "package Hidden is located in a dependency package directory but is not exported")
     os.rm(work)
     print("Bluespec synthesis boundary checks passed")
 end
