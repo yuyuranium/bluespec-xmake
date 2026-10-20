@@ -57,9 +57,27 @@ function main()
         return path.join(directory, "mkChild.v")
     end
 
+    -- BSC's package paths are nonrecursive. An ancestor source directory
+    -- must not claim packages found only through a nested provider's hint.
+    local boundaries = project
+    project = path.join(work, "nested-private-source")
+    os.cp(path.join(root, "tests/cases/unexported_package"), project)
+    local nested_recipe = path.join(project, "xmake.lua")
+    io.writefile(nested_recipe, (assert(io.readfile(nested_recipe))
+        :gsub('add_bsc_package_dirs%("src/library", {public = true}%)', "")
+        :gsub('add_bsc_package_dirs%("src/library"%)', "")
+        :gsub("src/consumer/Consumer%.bsv", "src/Consumer.bsv")))
+    io.writefile(path.join(project, "src/Consumer.bsv"),
+        (assert(io.readfile(path.join(project, "src/consumer/Consumer.bsv")))
+            :gsub("import Hidden::%*;", "import Public::*;\nimport Hidden::*;")))
+    run({"config", "-c", "-y", "--bluespec_backend_jobs=1", "--bluespec_bsc_jobs=1",
+        "--bluespec_scan_jobs=1"})
+    run({"build", "-j1", "consumer"},
+        "package Hidden is located in a dependency package directory but is not exported")
+    project = boundaries
+
     -- Provider and consumer may own separate packages in the same directory.
     -- A scan hint is not a public source-directory ownership declaration.
-    local boundaries = project
     os.cp(path.join(root, "tests/cases/scan_concurrency"), work)
     project = path.join(work, "scan_concurrency")
     io.writefile(path.join(project, "src/Local.bsv"),

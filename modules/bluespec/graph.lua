@@ -305,6 +305,14 @@ local function is_under(pathname, dirs)
     return false
 end
 
+local function is_in_source_dirs(source, dirs)
+    local directory = path.normalize(path.directory(source))
+    for _, dir in ipairs(dirs or {}) do
+        if directory == path.normalize(dir) then return true end
+    end
+    return false
+end
+
 local function provider_index(deps)
     local providers = {}
     local function add_provider(name, provider, owner)
@@ -446,10 +454,11 @@ local function finalize(target, parsed, config, deps)
             end
         elseif package.source and (is_under(package.source, config.dependency_exported_dirs) or
             (is_under(package.source, config.dependency_scan_source_dirs) and
-                not is_under(package.source, config.own_dirs))) then
+                not is_in_source_dirs(package.source, config.own_dirs))) then
             -- Explicit public directories retain dependency ownership. A
             -- private scan hint only fences otherwise unowned source paths:
             -- providers and consumers can own distinct colocated packages.
+            -- BSC source search paths do not include descendant directories.
             raise("package %s is located in a dependency package directory but is not exported by that target", name)
         elseif builtin[name] then
             if package.source and not is_under(package.source, tools.builtin_dirs()) then
@@ -500,7 +509,7 @@ local function finalize(target, parsed, config, deps)
     })
 
     return {
-        schema = 9,
+        schema = 10,
         target = target:fullname(),
         root = parsed.root,
         root_name = parsed.root_name,
