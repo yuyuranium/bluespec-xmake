@@ -1,9 +1,9 @@
 # Fixture checks
 
-Run the automated regression suite inside the development shell:
+Run the automated regression suite with the BSC and SystemC SDKs available:
 
 ```sh
-nix-shell --run 'xmake regression'
+nix-shell -p xmake bluespec systemc --run 'xmake regression'
 ```
 
 For the dependency parser alone, without compilation or parallel build jobs:
@@ -40,8 +40,21 @@ covering partial scanner closures containing only imported `.bo` edges. A
 consumer with the library's root source also verifies that its private defines
 select its own elaboration rather than the provider's prebuilt `.ba`.
 
+For serial, real-SystemC model isolation checks:
+
+```sh
+xmake lua tests/systemc_isolation.lua
+```
+
+The native compiler must find SystemC headers and libraries. An existing SDK
+can be supplied through ordinary `CPLUS_INCLUDE_PATH`/`LIBRARY_PATH` settings.
+Two models contain the same synthesized child with different register reset
+values; one executable includes both public headers and verifies both values.
+The check repeats with reversed header/archive order and verifies cache hits.
+
 The runner is implemented in Xmake Lua and uses isolated copies below
-`build/regression`.  It covers package-level reverse-dependency invalidation,
+`build/regression`; the focused boundary/isolation runners use temporary
+directories. It covers package-level reverse-dependency invalidation,
 dynamic import edge changes, dependency `.bo` reuse, generated BSV input/config
 invalidation and cache hits, valued/valueless defines, ordered multi-token BSC
 option groups with PUBLIC/INTERFACE propagation, and define

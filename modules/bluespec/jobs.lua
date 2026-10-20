@@ -10,6 +10,7 @@ local depend = import("core.project.depend")
 local progress = import("utils.progress")
 local pending_orders = {}
 local package_flavor_contract = "bluespec-package-flavor-v1"
+local systemc_isolation_contract = "bluespec-systemc-isolation-v1"
 
 local function package_job(target, name, flavor)
     return target:fullname() .. "/bluespec/" .. (flavor and flavor .. "/" or "") .. "package/" .. name
@@ -391,10 +392,42 @@ local function systemc_elaboration_args(target, graph)
     return program, args
 end
 
-local function systemc_generate_args(target, graph)
+local function systemc_prefix(target)
+    return "bsc_" .. tostring(hash.strhash64(target:fullname()))
+end
+
+-- Different models can contain different implementations of the same BSV
+-- module. Static archives otherwise silently share MOD_<module> constructors.
+-- Only internal C++ identifiers are scoped; public tops and BSV/RTL stay put.
+local function systemc_isolation(target, graph)
+    local modules = {}
+    local directories = table.join({graph.output_dir}, graph.package_dirs or {})
+    for _, directory in ipairs(util.unique_sorted(directories)) do
+        for _, artifact in ipairs(os.files(path.join(directory, "*.ba"))) do
+            local name = path.filename(artifact):sub(1, -4)
+            if name ~= graph.top then modules[name] = true end
+        end
+    end
+    local prefix = systemc_prefix(target)
+    local defines, identifiers = {}, {}
+    for _, name in ipairs(dictionary_keys(modules)) do
+        local original = "MOD_" .. name
+        local isolated = "MOD_" .. prefix .. "_" .. name
+        table.insert(defines, original .. "=" .. isolated)
+        identifiers[original] = isolated
+        identifiers["__" .. name .. "_h__"] = prefix .. "_" .. name .. "_h"
+    end
+    return defines, identifiers
+end
+
+local function systemc_generate_args(target, graph, defines)
     local program, args = backend_args(target, graph, "systemc", "generate")
     table.insert(args, "-o")
     table.insert(args, path.join(util.backend_dir(target, "systemc"), ".bsc-systemc-model"))
+    for _, define in ipairs(defines or {}) do
+        table.insert(args, "-Xc++")
+        table.insert(args, "-D" .. define)
+    end
     append_pairs(args, native.systemc_args(target))
     return program, args
 end
@@ -413,7 +446,8 @@ local function build_systemc(target, graph)
         job = backend_job(target, "systemc"),
         phase = "systemc-elaborate",
     })
-    local program, args = systemc_generate_args(target, graph)
+    local defines, identifiers = systemc_isolation(target, graph)
+    local program, args = systemc_generate_args(target, graph, defines)
     local bsc_output = path.join(util.backend_dir(target, "systemc"), ".bsc-systemc-model")
     tools.run_bsc(target, args, {
         graph = graph,
@@ -437,7 +471,11 @@ local function build_systemc(target, graph)
         local relative = path.relative(header, systemc_dir)
         local destination = path.join(include_dir, relative)
         os.mkdir(path.directory(destination))
-        os.cp(header, destination)
+        -- Public headers from multiple models may appear in one translation
+        -- unit. Rename complete identifiers and guards, not substrings.
+        local contents = assert(io.readfile(header))
+        contents = contents:gsub("%f[%w_][%a_][%w_]*%f[^%w_]", identifiers)
+        io.writefile(destination, contents)
     end
     local sources = generated_sources(util.backend_dir(target, "systemc"))
     if #sources == 0 then
@@ -457,6 +495,9 @@ local function build_systemc(target, graph)
         local configs = {
             includedirs = includedirs,
             sysincludedirs = native.sysinclude_dirs(target),
+            -- BSC's objects are discarded below. Its generated sources must
+            -- receive the same preprocessor renames when Xmake compiles them.
+            defines = defines,
         }
         compiler.compile(source, object, {target = target, configs = configs})
         table.insert(objects, object)
@@ -638,6 +679,11 @@ local function backend_depend(target, graph, backend, callback)
         backend == "systemc" and native.systemc_identity(target) or "",
     }
     if backend == "systemc" then
+        add_value(values, "systemc-isolation", systemc_isolation_contract)
+        add_value(values, "systemc-prefix", systemc_prefix(target))
+        -- The internal module set is derived after top elaboration, from the
+        -- tracked package closure. Do not fingerprint temporary .ba presence:
+        -- that would make clean and warm signatures differ unnecessarily.
         for phase, command in ipairs({
             {systemc_elaboration_args(target, graph)},
             {systemc_generate_args(target, graph)},

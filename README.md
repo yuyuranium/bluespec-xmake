@@ -18,10 +18,11 @@ xmake build
 
 The shell provides `xmake`, `bsc`, and `bluetcl` from `shell.nix`.
 
-Run the Xmake-Lua regression suite with:
+The Xmake-Lua regression suite also requires a SystemC SDK in the native
+compiler/link environment. For example:
 
 ```sh
-xmake regression
+nix-shell -p xmake bluespec systemc --run 'xmake regression'
 ```
 
 ## Consumer example
@@ -206,6 +207,12 @@ recompiling provider sources. Endpoint top elaboration uses a separate
 library. Verilog consumers copy their synthesized dependency closure into the
 public RTL directory before writing the filelist. `simdir` contains Bluesim
 intermediates, and `info` contains informational output.
+
+SystemC models preserve their public top names and scope generated internal
+C++ classes and header guards to the logical target. Distinct implementations
+of the same synthesized child can therefore coexist in one executable and one
+translation unit. The same private preprocessor definitions apply to BSC's
+native generation and Xmake's compilation of the generated sources.
 Package and backend dependfiles, graph cache, and Xmake's `.xmake` state are
 internal.  Graph entries are scoped to the configured build/autogen/output
 directories; source/import changes, include paths, flags, and the BSC identity
