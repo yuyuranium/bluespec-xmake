@@ -12,7 +12,7 @@ end
 
 local function target_key(target)
     return table.concat({
-        "schema=10",
+        "schema=11",
         "project=" .. absolute(os.projectdir()),
         "target=" .. target:fullname(),
         "plat=" .. tostring(target:plat()),
@@ -70,7 +70,7 @@ end
 
 function fingerprint(target, inputs, config)
     local parts = {
-        "schema=10",
+        "schema=11",
         "target=" .. target_key(target),
         "bsc=" .. tools.identity(),
         "scanner=" .. tools.scanner_identity(),

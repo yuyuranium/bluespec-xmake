@@ -13,7 +13,20 @@ xmake lua tests/parser.lua
 ```
 
 This checks textual `.bsv` includes, primary-source selection, and explicit or
-implicit source-only packages in partial dependency closures.
+implicit source-only packages in partial dependency closures. Same-basename
+includes are tested before and after the declaring source, in both supported
+record formats; explicit declarations take precedence over implicit fallback.
+
+For real Bluetcl and BSC same-basename include checks:
+
+```sh
+xmake lua tests/include_fragments.lua
+```
+
+This first validates the input using native `bsc -u`, then builds both
+`bluespec.check` and `bluespec.verilog`. Changing the include's typedef must
+recompile its package in both flavors and change the generated RTL port width;
+unchanged builds must stay cached.
 
 For real Bluetcl flag/error handling and scanner cache identity, without BSC
 compilation:

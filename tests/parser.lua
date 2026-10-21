@@ -8,6 +8,7 @@ function main()
         function()
             local function source(name, contents)
                 local file = path.join(directory, name .. ".bsv")
+                os.mkdir(path.directory(file))
                 io.writefile(file, contents)
                 return file
             end
@@ -18,6 +19,7 @@ function main()
             local fragment = source("Fragment", "// package Fragment; is only a comment\n"
                 .. "/*\npackage Ghost;\n*/\nString description = \"package Decoy;\";\n"
                 .. "typedef Bit#(8) Byte;\n")
+            local homonym = source("fragments/Helper", "typedef Bit#(8) Byte;\n")
             local prerequisites = fragment .. " " .. helper .. " " .. leaf .. " " .. implicit .. " Implicit.bo"
             -- Cover native Bluetcl Tcl records and the supported make fallback.
             for _, records in ipairs({
@@ -35,6 +37,22 @@ function main()
                 assert(graph.packages.Implicit and graph.packages.Implicit.source == implicit,
                     "partial closure lost an imported implicit package")
             end
+            -- A same-basename include follows its declaring file in real
+            -- Bluetcl output. Cover both orders and both record formats.
+            for _, order in ipairs({{helper, homonym}, {homonym, helper}}) do
+                for _, records in ipairs({
+                    "{Top.bo {" .. top .. " Helper.bo}} {Helper.bo {" .. table.concat(order, " ") .. "}}",
+                    "Top.bo: " .. top .. " Helper.bo\nHelper.bo: " .. table.concat(order, " "),
+                }) do
+                    local graph = parser.parse(records, top)
+                    assert(graph.packages.Helper.source == helper,
+                        "same-basename include fragment replaced the declaring source")
+                    assert(graph.packages.Helper.sources[homonym],
+                        "same-basename fragment was dropped from tracked inputs")
+                end
+            end
+            local graph = parser.parse("Top.bo: " .. top .. " Implicit.bo\nImplicit.bo: " .. implicit, top)
+            assert(graph.packages.Implicit.source == implicit, "implicit package provider was lost")
         end,
         catch {function(err) errors = err end},
         finally {function() os.tryrm(directory) end},

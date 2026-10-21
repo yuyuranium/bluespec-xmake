@@ -292,9 +292,11 @@ function parse(text, root)
                     local dep_output = output_path(prerequisite)
                     if source then
                         package.sources[source] = true
-                        -- Bluetcl's .bo provider identifies the declaring
-                        -- source; include order does not identify that source.
-                        if package_name(source) == name then
+                        -- Prefer the declaring source over same-basename
+                        -- includes. Keep the first candidate as the fallback
+                        -- for BSC's implicit packages (no package statement).
+                        if package_name(source) == name and
+                            (not package.source or declared_package(source) == name) then
                             package.source = source
                         end
                     elseif dep_output then

@@ -1852,6 +1852,9 @@ function main()
         {"dependency parser/include inputs", function()
             import("parser", {rootdir = path.join(root, "tests")}).main()
         end},
+        {"same-basename include/Bluetcl/check/Verilog", function()
+            import("include_fragments", {rootdir = path.join(root, "tests")}).main()
+        end},
         {"scanner flags/errors/cache identity", function()
             import("scanner", {rootdir = path.join(root, "tests")}).main()
         end},

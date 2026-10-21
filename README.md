@@ -166,6 +166,11 @@ whole backend transaction, including its generated model/link phases, and is
 acquired only after incremental checking finds real work. Backend-neutral
 package checks remain parallel subject to their import DAG and the optional
 all-BSC cap; backend-specific package jobs also acquire a backend slot.
+This deliberately serializes flavored package `-elab` work at the default
+`bluespec_backend_jobs=1`: those jobs can synthesize module boundaries, so they
+share the conservative memory bound with endpoint generation. Increase this
+limit (alongside a suitable global `-j` and optional all-BSC cap) when measured
+throughput justifies the additional concurrent elaboration memory.
 The scan pool is separate from both BSC pools and limits only real Bluetcl
 processes; it is not required to enable scan parallelism or single-flight.
 
