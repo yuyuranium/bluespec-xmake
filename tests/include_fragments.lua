@@ -80,7 +80,7 @@ target("rtl")
             "fragment type change did not reach RTL output width; logs in " .. work)
     end
     local function cache_hit()
-        local output = xmake({"build", "-j1", "all"})
+        local output = xmake({"build", "-j1", "-a"})
         for _, message in ipairs({"scanning Bluespec", "compiling Bluespec", "building Bluespec"}) do
             assert(not output:find(message, 1, true), "unchanged include fixture: " .. output)
         end
