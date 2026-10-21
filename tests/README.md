@@ -1,13 +1,73 @@
 # Fixture checks
 
-Run the automated regression suite inside the development shell:
+Run the automated regression suite with the BSC and SystemC SDKs available:
 
 ```sh
-nix-shell --run 'xmake regression'
+nix-shell -p xmake bluespec systemc --run 'xmake regression'
 ```
 
+For the dependency parser alone, without compilation or parallel build jobs:
+
+```sh
+xmake lua tests/parser.lua
+```
+
+This checks textual `.bsv` includes, primary-source selection, and explicit or
+implicit source-only packages in partial dependency closures. Same-basename
+includes are tested before and after the declaring source, in both supported
+record formats; explicit declarations take precedence over implicit fallback.
+
+For real Bluetcl and BSC same-basename include checks:
+
+```sh
+xmake lua tests/include_fragments.lua
+```
+
+This first validates the input using native `bsc -u`, then builds both
+`bluespec.check` and `bluespec.verilog`. Changing the include's typedef must
+recompile its package in both flavors and change the generated RTL port width;
+unchanged builds must stay cached.
+
+For real Bluetcl flag/error handling and scanner cache identity, without BSC
+compilation:
+
+```sh
+xmake lua tests/scanner.lua
+```
+
+This checks conditional imports with Haskell RTS options, preserves the BSC
+compile arguments, rejects Tcl failures, and invalidates raw/parsed graph caches
+when the scanner contract changes.
+
+For serial, real-BSC synthesis boundary checks:
+
+```sh
+xmake lua tests/boundaries.lua
+```
+
+This builds and runs two Bluesim consumers sharing a synthesized dependency,
+checks the self-contained public Verilog closure, and verifies cache hits,
+missing `.ba`/`.v` recovery, and removal of stale synthesized children.
+The provider is built before consumers and keeps its source paths private,
+covering partial scanner closures containing only imported `.bo` edges. A
+consumer with the library's root source also verifies that its private defines
+select its own elaboration rather than the provider's prebuilt `.ba`.
+
+For serial, real-SystemC model isolation checks:
+
+```sh
+xmake lua tests/systemc_isolation.lua
+```
+
+The native compiler must find SystemC headers and libraries. An existing SDK
+can be supplied through ordinary `CPLUS_INCLUDE_PATH`/`LIBRARY_PATH` settings.
+Two models contain the same synthesized child with different register reset
+values; one executable includes both public headers and verifies both values.
+The check repeats with reversed header/archive order and verifies cache hits.
+
 The runner is implemented in Xmake Lua and uses isolated copies below
-`build/regression`.  It covers package-level reverse-dependency invalidation,
+`build/regression`; the focused boundary/isolation runners use temporary
+directories. It covers package-level reverse-dependency invalidation,
 dynamic import edge changes, dependency `.bo` reuse, generated BSV input/config
 invalidation and cache hits, valued/valueless defines, ordered multi-token BSC
 option groups with PUBLIC/INTERFACE propagation, and define

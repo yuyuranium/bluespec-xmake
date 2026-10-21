@@ -9,9 +9,11 @@ local linker = import("core.tool.linker")
 local depend = import("core.project.depend")
 local progress = import("utils.progress")
 local pending_orders = {}
+local package_flavor_contract = "bluespec-package-flavor-v1"
+local systemc_isolation_contract = "bluespec-systemc-isolation-v1"
 
-local function package_job(target, name)
-    return target:fullname() .. "/bluespec/package/" .. name
+local function package_job(target, name, flavor)
+    return target:fullname() .. "/bluespec/" .. (flavor and flavor .. "/" or "") .. "package/" .. name
 end
 
 local function backend_job(target, backend)
@@ -38,6 +40,117 @@ local function dictionary_keys(values)
     return result
 end
 
+-- Backend-neutral packages are useful checks, but imported synthesize modules
+-- retain their boundaries only when compiled for the consuming BSC backend.
+-- These private views reuse the prepared import graph; they never rescan or
+-- expose dependency sources to the compiler. Component/flavor/package paths
+-- and job names let all consumers share the same native dependency jobs.
+local function package_view(target, graph, flavor)
+    local views = target:data("bluespec.package_views") or {}
+    if views[flavor] and views[flavor].base_fingerprint == graph.fingerprint then
+        return views[flavor]
+    end
+    local view = table.clone(graph)
+    view.flavor = flavor
+    view.base_fingerprint = graph.fingerprint
+    view.fingerprint = graph.fingerprint .. "|" .. package_flavor_contract .. "|" .. flavor
+    view.packages, view.providers, view.provider_views, view.package_dirs = {}, {}, {}, {}
+    view.owned = table.clone(graph.owned)
+    -- An endpoint root is compiled with -g in its private elaboration job.
+    -- Without that top context, otherwise valid modules can be too general
+    -- for a fixed Module child. Imported library packages retain their jobs.
+    if target:data("bluespec.rule") ~= "bluespec.library" then
+        view.owned[graph.root_name] = nil
+        view.fingerprint = view.fingerprint .. "|bluespec-endpoint-root-v1"
+    end
+    views[flavor] = view
+    target:data_set("bluespec.package_views", views)
+    local removed_dirs = {[path.normalize(graph.output_dir)] = true}
+    local search_dirs = {}
+    local required = {}
+    for name, package in pairs(graph.packages) do
+        required[name] = true
+        for dep in pairs(package.deps or {}) do required[dep] = true end
+        view.packages[name] = table.clone(package)
+        if view.owned[name] then
+            local owned = view.packages[name]
+            owned.output_dir = path.join(util.state_dir(target), "packages", flavor, name)
+            owned.bo = path.join(owned.output_dir, name .. ".bo")
+            owned.info_dir = path.join(owned.output_dir, "info")
+            owned.rtl_dir = path.join(owned.output_dir, "rtl")
+            owned.manifest = path.join(owned.output_dir, "outputs.lua")
+            table.insert(view.package_dirs, owned.output_dir)
+        elseif graph.owned[name] then
+            -- Do not track a phantom intermediate .bo for the endpoint root.
+            view.packages[name].bo = nil
+        end
+    end
+    for name, provider in pairs(graph.providers or {}) do
+        removed_dirs[path.normalize(provider.output_dir)] = true
+        if required[name] then
+            local owner = assert(import("core.project.project").target(provider.target),
+                "missing Bluespec provider target " .. provider.target)
+            local owner_graph = assert(graphmod.get(owner), "unprepared Bluespec provider " .. provider.target)
+            local owner_view = package_view(owner, owner_graph, flavor)
+            view.provider_views[provider.target] = {target = owner, graph = owner_view}
+            local package = assert(owner_view.packages[name], "missing provider package " .. name)
+            local replacement = table.clone(provider)
+            replacement.bo = package.bo
+            replacement.output_dir = package.output_dir
+            replacement.manifest = package.manifest
+            replacement.rtl_dir = package.rtl_dir
+            replacement.flavor = flavor
+            view.providers[name] = replacement
+            -- Source records for external packages must not retain the neutral
+            -- output, even when a partial scan supplied an associated source.
+            if view.packages[name] then view.packages[name].bo = package.bo end
+            table.join2(view.package_dirs, owner_view.package_dirs)
+        end
+    end
+    for _, directory in ipairs(graph.search_dirs or {}) do
+        if not removed_dirs[path.normalize(directory)] then
+            table.insert(search_dirs, directory)
+        end
+    end
+    view.package_dirs = util.unique_sorted(view.package_dirs)
+    table.join2(search_dirs, view.package_dirs)
+    view.search_dirs = util.unique_sorted(search_dirs)
+    -- The top source may itself be supplied by a library. Explicit -g
+    -- compilation must never rewrite a shared provider's package or manifest.
+    view.output_dir = path.join(util.state_dir(target), "elaboration", flavor)
+    view.info_dir = path.join(view.output_dir, "info")
+    return view
+end
+
+local function package_outputs(package)
+    return package.manifest and io.load(package.manifest) or nil
+end
+
+local function package_ready(package)
+    if not util.artifact_complete(package.bo) then
+        return false
+    end
+    if package.manifest then
+        local outputs = package_outputs(package)
+        if not outputs or #outputs == 0 then return false end
+        for _, file in ipairs(outputs) do
+            if not os.isfile(file) then return false end
+        end
+    end
+    return true
+end
+
+local function complete_package(package)
+    if package.manifest then
+        local outputs = {package.bo}
+        for _, pattern in ipairs({"*.ba", "rtl/*.v"}) do
+            table.join2(outputs, os.files(path.join(package.output_dir, pattern)))
+        end
+        io.save(package.manifest, util.unique_sorted(outputs))
+    end
+    util.mark_artifact_complete(package.bo)
+end
+
 local function add_value(values, name, value)
     table.insert(values, name .. "=" .. tostring(value or ""))
 end
@@ -48,6 +161,7 @@ end
 -- changes the exact compile command.
 local function package_depend_values(target, graph, name, package, program, args)
     local values = {"bluespec-package-depend-v4"}
+    if graph.flavor then add_value(values, "flavor-contract", package_flavor_contract) end
     add_value(values, "target", graph.target)
     add_value(values, "package", name)
     add_value(values, "owner", package.target)
@@ -104,7 +218,8 @@ local function provider_job(jobgraph, provider, package_name)
     if not provider or not provider.target then
         return nil
     end
-    return provider.target .. "/bluespec/package/" .. package_name
+    return provider.target .. "/bluespec/" .. (provider.flavor and provider.flavor .. "/" or "")
+        .. "package/" .. package_name
 end
 
 local function add_order(jobgraph, before, after)
@@ -128,13 +243,18 @@ local function flush_orders(jobgraph, job)
     end
 end
 
-local function schedule_packages(target, jobgraph, graph, backend)
-    local names = package_names(graph)
+local function schedule_packages(target, jobgraph, graph)
     local jobs = {}
+    for _, provider in pairs(graph.provider_views or {}) do
+        for _, job in pairs(schedule_packages(provider.target, jobgraph, provider.graph)) do
+            jobs[job] = job
+        end
+    end
+    local names = package_names(graph)
     for _, name in ipairs(names) do
         local package = graph.packages[name]
         if package.source then
-            local job = package_job(target, name)
+            local job = package_job(target, name, graph.flavor)
             jobs[name] = job
             if not jobgraph:has(job) then
                 jobgraph:add(job, function(index, total, opt)
@@ -161,20 +281,25 @@ local function schedule_packages(target, jobgraph, graph, backend)
                         if opt and opt.progress then
                             progress.show(opt.progress, "compiling Bluespec package %s", name)
                         end
-                        os.mkdir(graph.output_dir)
+                        if graph.flavor then os.rm(package.output_dir) end
+                        os.mkdir(package.output_dir or graph.output_dir)
+                        if graph.flavor then
+                            os.mkdir(package.info_dir)
+                            if graph.flavor == "verilog" then os.mkdir(package.rtl_dir) end
+                        end
                         util.invalidate_artifact(package.bo)
-                        tools.run_bsc(target, args, {
-                            graph = graph,
-                            job = package_job(target, name),
-                            phase = "package",
-                        })
-                        util.mark_artifact_complete(package.bo)
+                        local function compile()
+                            tools.run_bsc(target, args, {graph = graph, job = job,
+                                phase = graph.flavor and "package-" .. graph.flavor or "package"})
+                        end
+                        if graph.flavor then resources.with_backend(compile) else compile() end
+                        complete_package(package)
                         return {}
                     end, {
                         dependfile = target:dependfile(package.bo),
                         files = inputs,
                         values = values,
-                        changed = target:is_rebuilt() or not util.artifact_complete(package.bo),
+                        changed = target:is_rebuilt() or not package_ready(package),
                     })
                 end)
             end
@@ -226,9 +351,9 @@ local function backend_args(target, graph, backend, phase)
             table.insert(args, "-e")
             table.insert(args, assert(graph.top, "Bluespec backend requires a top module"))
         else
+            table.insert(args, "-elab")
             table.insert(args, "-g")
             table.insert(args, assert(graph.top, "Bluespec backend requires a top module"))
-            table.insert(args, "-u")
             table.insert(args, graph.root)
         end
     elseif phase == "link" then
@@ -271,17 +396,49 @@ local function systemc_elaboration_args(target, graph)
     local program, args = tools.package_args(target, graph, nil, "bluesim")
     table.insert(args, "-simdir")
     table.insert(args, util.backend_dir(target, "systemc"))
+    table.insert(args, "-elab")
     table.insert(args, "-g")
     table.insert(args, assert(graph.top, "Bluespec backend requires a top module"))
-    table.insert(args, "-u")
     table.insert(args, graph.root)
     return program, args
 end
 
-local function systemc_generate_args(target, graph)
+local function systemc_prefix(target)
+    return "bsc_" .. tostring(hash.strhash64(target:fullname()))
+end
+
+-- Different models can contain different implementations of the same BSV
+-- module. Static archives otherwise silently share MOD_<module> constructors.
+-- Only internal C++ identifiers are scoped; public tops and BSV/RTL stay put.
+local function systemc_isolation(target, graph)
+    local modules = {}
+    local directories = table.join({graph.output_dir}, graph.package_dirs or {})
+    for _, directory in ipairs(util.unique_sorted(directories)) do
+        for _, artifact in ipairs(os.files(path.join(directory, "*.ba"))) do
+            local name = path.filename(artifact):sub(1, -4)
+            if name ~= graph.top then modules[name] = true end
+        end
+    end
+    local prefix = systemc_prefix(target)
+    local defines, identifiers = {}, {}
+    for _, name in ipairs(dictionary_keys(modules)) do
+        local original = "MOD_" .. name
+        local isolated = "MOD_" .. prefix .. "_" .. name
+        table.insert(defines, original .. "=" .. isolated)
+        identifiers[original] = isolated
+        identifiers["__" .. name .. "_h__"] = prefix .. "_" .. name .. "_h"
+    end
+    return defines, identifiers
+end
+
+local function systemc_generate_args(target, graph, defines)
     local program, args = backend_args(target, graph, "systemc", "generate")
     table.insert(args, "-o")
     table.insert(args, path.join(util.backend_dir(target, "systemc"), ".bsc-systemc-model"))
+    for _, define in ipairs(defines or {}) do
+        table.insert(args, "-Xc++")
+        table.insert(args, "-D" .. define)
+    end
     append_pairs(args, native.systemc_args(target))
     return program, args
 end
@@ -300,7 +457,8 @@ local function build_systemc(target, graph)
         job = backend_job(target, "systemc"),
         phase = "systemc-elaborate",
     })
-    local program, args = systemc_generate_args(target, graph)
+    local defines, identifiers = systemc_isolation(target, graph)
+    local program, args = systemc_generate_args(target, graph, defines)
     local bsc_output = path.join(util.backend_dir(target, "systemc"), ".bsc-systemc-model")
     tools.run_bsc(target, args, {
         graph = graph,
@@ -324,7 +482,11 @@ local function build_systemc(target, graph)
         local relative = path.relative(header, systemc_dir)
         local destination = path.join(include_dir, relative)
         os.mkdir(path.directory(destination))
-        os.cp(header, destination)
+        -- Public headers from multiple models may appear in one translation
+        -- unit. Rename complete identifiers and guards, not substrings.
+        local contents = assert(io.readfile(header))
+        contents = contents:gsub("%f[%w_][%a_][%w_]*%f[^%w_]", identifiers)
+        io.writefile(destination, contents)
     end
     local sources = generated_sources(util.backend_dir(target, "systemc"))
     if #sources == 0 then
@@ -344,6 +506,9 @@ local function build_systemc(target, graph)
         local configs = {
             includedirs = includedirs,
             sysincludedirs = native.sysinclude_dirs(target),
+            -- BSC's objects are discarded below. Its generated sources must
+            -- receive the same preprocessor renames when Xmake compiles them.
+            defines = defines,
         }
         compiler.compile(source, object, {target = target, configs = configs})
         table.insert(objects, object)
@@ -364,6 +529,47 @@ local function build_verilog(target, graph)
         job = backend_job(target, "verilog"),
         phase = "verilog-generate",
     })
+    -- Library variants own their synthesized modules. Materialize the needed
+    -- closure into the consumer's public directory so its filelist remains
+    -- self-contained, including after a synthesized module disappears.
+    local directories = {}
+    local visited = {}
+    local root_provider = graph.providers[graph.root_name]
+    local root_owner = root_provider and root_provider.target or graph.target
+    local function collect(current, name)
+        local key = current.target .. "/" .. name
+        if visited[key] then return end
+        visited[key] = true
+        local provider = current.providers[name]
+        if provider then
+            return collect(current.provider_views[provider.target].graph, name)
+        end
+        local package = current.packages[name]
+        if not package then return end -- BSC builtin package
+        -- The endpoint just emitted its root compilation unit, even when that
+        -- source belongs to a provider. Use the endpoint's configuration.
+        if package.rtl_dir and (current.target ~= root_owner or name ~= graph.root_name) then
+            table.insert(directories, package.rtl_dir)
+        end
+        -- A warm Bluetcl scan may contain only a provider .bo edge, with no
+        -- source record or transitive imports. Follow its owner's graph to
+        -- recover the synthesized closure without adding source search paths.
+        for dep in pairs(package.deps or {}) do collect(current, dep) end
+    end
+    collect(graph, graph.root_name)
+    for _, directory in ipairs(util.unique_sorted(directories)) do
+        for _, source in ipairs(os.files(path.join(directory, "*.v"))) do
+            local destination = path.join(rtl_dir, path.filename(source))
+            if os.isfile(destination) then
+                if io.readfile(destination) ~= io.readfile(source) then
+                    raise("conflicting synthesized Verilog module %s for target(%s)",
+                        path.filename(source), target:name())
+                end
+            else
+                os.cp(source, destination)
+            end
+        end
+    end
     local files = os.files(path.join(rtl_dir, "*.v"))
     table.sort(files)
     if #files == 0 then
@@ -400,41 +606,32 @@ local function reset_elaboration_artifacts(graph)
     -- BSC's update check for .ba files does not include the full command-line
     -- configuration. A package .bo can therefore be rebuilt for changed
     -- defines/options while `-g` silently reuses an older top elaboration.
-    -- These files belong to this target's private bdir; dependency providers
-    -- live in their own output directories and their .bo files are untouched.
-    local removed = {}
-    for _, pattern in ipairs({"*.ba", "**/*.ba"}) do
-        for _, artifact in ipairs(os.files(path.join(graph.output_dir, pattern))) do
-            artifact = path.normalize(artifact)
-            if not removed[artifact] then
-                os.rm(artifact)
-                removed[artifact] = true
-            end
-        end
-    end
-end
-
-local function mark_packages_complete(graph)
-    -- Backend `-u` invocations may refresh owned .bo files.  Record their
-    -- post-backend stamps so an unchanged next build remains a full cache hit.
-    for name, package in pairs(graph.packages or {}) do
-        if graph.owned and graph.owned[name] and package.bo and os.isfile(package.bo) then
-            util.mark_artifact_complete(package.bo)
-        end
-    end
+    -- This whole directory belongs to the endpoint; shared package variants
+    -- are immutable during top elaboration, including provided-root endpoints.
+    os.rm(graph.output_dir)
+    os.mkdir(graph.output_dir)
+    os.mkdir(graph.info_dir)
 end
 
 local function backend_inputs(target, graph)
     local files = {}
+    -- Top compilation consumes its source and textual includes directly,
+    -- including when a library also provides this source under other flags.
+    table.insert(files, graph.root)
+    local root = graph.packages[graph.root_name]
+    for source in pairs(root and root.sources or {}) do table.insert(files, source) end
+    for input in pairs(root and root.inputs or {}) do table.insert(files, input) end
     for _, package in pairs(graph.packages or {}) do
         if package.bo then
             table.insert(files, package.bo)
         end
+        if package.manifest then table.insert(files, package.manifest) end
     end
     for _, provider in pairs(graph.providers or {}) do
         if provider.bo then
             table.insert(files, provider.bo)
         end
+        if provider.manifest then table.insert(files, provider.manifest) end
     end
     -- Native BDPI/static dependencies are ordinary Xmake targets.  Their
     -- archives must participate in the backend dependfile just like `.bo`
@@ -450,9 +647,14 @@ local function backend_ready(target, graph, backend)
         local output = path.absolute(target:targetfile())
         return os.isfile(output) and os.isfile(output .. ".so")
     elseif backend == "verilog" then
-        local directory = util.verilog_dir(target)
-        return os.isfile(util.verilog_filelist(target)) and
-            #os.files(path.join(directory, "*.v")) > 0
+        local filelist = util.verilog_filelist(target)
+        if not os.isfile(filelist) then return false end
+        local count = 0
+        for file in (io.readfile(filelist) or ""):gmatch("[^\r\n]+") do
+            if not os.isfile(file) then return false end
+            count = count + 1
+        end
+        return count > 0
     elseif backend == "systemc" then
         local include_dir = path.join(util.backend_dir(target, "systemc"), "include")
         local headers = os.files(path.join(include_dir, "*.h"))
@@ -494,6 +696,11 @@ local function backend_depend(target, graph, backend, callback)
         backend == "systemc" and native.systemc_identity(target) or "",
     }
     if backend == "systemc" then
+        add_value(values, "systemc-isolation", systemc_isolation_contract)
+        add_value(values, "systemc-prefix", systemc_prefix(target))
+        -- The internal module set is derived after top elaboration, from the
+        -- tracked package closure. Do not fingerprint temporary .ba presence:
+        -- that would make clean and warm signatures differ unnecessarily.
         for phase, command in ipairs({
             {systemc_elaboration_args(target, graph)},
             {systemc_generate_args(target, graph)},
@@ -514,7 +721,6 @@ local function backend_depend(target, graph, backend, callback)
             -- until this backend owns the project-wide resource slot.
             os.rm(completion)
             local result = callback()
-            mark_packages_complete(graph)
             io.writefile(completion, signature .. "\n")
             return result
         end)
@@ -574,8 +780,11 @@ function schedule_build(target, jobgraph, backend)
     if not graph then
         raise("target(%s) has no Bluespec graph; prepare phase did not run", target:name())
     end
-    local package_jobs = schedule_packages(target, jobgraph, graph, backend)
     if backend == "bluesim" or backend == "verilog" or backend == "systemc" then
+        graph = package_view(target, graph, backend == "verilog" and "verilog" or "sim")
+        local package_jobs = schedule_packages(target, jobgraph, graph)
         schedule_backend(target, jobgraph, graph, backend, package_jobs)
+    else
+        schedule_packages(target, jobgraph, graph)
     end
 end

@@ -1,3 +1,6 @@
 package Top2;
-module mkTop2(Empty); endmodule
+import Common::*;
+module mkTop2(Empty);
+    Reg#(Bit#(8)) value <- mkReg(commonValue());
+endmodule
 endpackage

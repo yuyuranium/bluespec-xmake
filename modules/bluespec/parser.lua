@@ -209,6 +209,18 @@ local function package_name(pathname)
     return name
 end
 
+local function declared_package(source)
+    local contents = io.readfile(source)
+    if not contents then
+        return nil
+    end
+    -- A .bsv prerequisite may be a textual include rather than a package.
+    -- Ignore commented-out declarations and require a declaration statement,
+    -- including when preprocessor directives precede the package.
+    contents = contents:gsub("/%*.-%*/", " "):gsub("//[^\r\n]*", " ")
+    return ("\n" .. contents):match("[\r\n]%s*package%s+([%a_][%w_]*)%s*;")
+end
+
 local function source_path(token, root)
     if not token:match("%.[bB][sS][vV]$") then
         return nil
@@ -280,9 +292,11 @@ function parse(text, root)
                     local dep_output = output_path(prerequisite)
                     if source then
                         package.sources[source] = true
-                        if source ~= path.normalize(root) and not package.source then
-                            package.source = source
-                        elseif source == path.normalize(root) then
+                        -- Prefer the declaring source over same-basename
+                        -- includes. Keep the first candidate as the fallback
+                        -- for BSC's implicit packages (no package statement).
+                        if package_name(source) == name and
+                            (not package.source or declared_package(source) == name) then
                             package.source = source
                         end
                     elseif dep_output then
@@ -311,7 +325,7 @@ function parse(text, root)
     local root_name
     local root_package
     for name, package in pairs(packages) do
-        if package.source == root or package.sources[root] then
+        if package.source == root then
             if root_package and root_name ~= name then
                 raise("root source %s declares multiple package providers: %s and %s",
                     root, root_name, name)
@@ -329,30 +343,22 @@ function parse(text, root)
     root_package.inputs[root] = true
 
     -- Bluetcl can omit a .bo rule for a source in a partially compiled
-    -- closure.  Keep source-only packages in the graph so ownership and
-    -- diagnostics remain deterministic.
+    -- closure. Keep genuine source-only packages, but leave textual includes
+    -- as tracked inputs of their importing package rather than compile jobs.
     for _, package in pairs(packages) do
-        local source_names = {}
         for source in pairs(package.sources) do
-            local name = package_name(source)
-            if name ~= package.name then
-                source_names[name] = true
-            end
-        end
-        for name in pairs(source_names) do
-            local source_package = ensure_package(packages, name)
-            if not source_package.source then
-                for source in pairs(package.sources) do
-                    if package_name(source) == name then
-                        source_package.source = source
-                        source_package.sources[source] = true
-                        source_package.inputs[source] = true
-                        break
-                    end
+            if source ~= package.source then
+                local source_name = package_name(source)
+                -- BSV also permits implicit packages. A matching .bo import
+                -- proves ownership even when its source has no declaration.
+                local name = package.deps[source_name] and source_name or declared_package(source)
+                if name and name ~= package.name then
+                    local source_package = ensure_package(packages, name)
+                    source_package.source = source_package.source or source
+                    source_package.sources[source] = true
+                    source_package.inputs[source] = true
+                    package.deps[name] = true
                 end
-            end
-            if name ~= package.name then
-                package.deps[name] = true
             end
         end
     end

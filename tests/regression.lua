@@ -302,7 +302,7 @@ local function test_incremental(root, workroot, run)
 
     local initial_rtl = run(projectdir, {"build", "rtl"}, {context = "initial incremental backend"})
     assert_contains(initial_rtl, "scanning Bluespec rtl", "initial incremental backend")
-    assert_contains(initial_rtl, "compiling Bluespec package Top", "initial incremental backend")
+    assert_not_contains(initial_rtl, "compiling Bluespec package Top", "initial incremental backend")
     assert_contains(initial_rtl, "building Bluespec verilog rtl", "initial incremental backend")
 
     local cached = run(projectdir, {"build", "consumer"}, {context = "cache-hit build"})
@@ -339,7 +339,7 @@ endpackage
     assert_contains(changed, "scanning Bluespec library", "source invalidation")
     assert_contains(changed, "compiling Bluespec package Leaf", "source invalidation")
     assert_contains(changed, "compiling Bluespec package Base", "source invalidation")
-    assert_contains(changed, "compiling Bluespec package Top", "source invalidation")
+    assert_not_contains(changed, "compiling Bluespec package Top", "source invalidation")
     assert_contains(changed, "building Bluespec verilog rtl", "source invalidation")
     assert_not_contains(changed, "compiling Bluespec package Other", "source invalidation")
 
@@ -449,7 +449,7 @@ local function test_defines(root, workroot, run)
     assert_contains(first, "scanning Bluespec define-lib", "initial define build")
     assert_contains(first, "scanning Bluespec define-repro", "initial define build")
     assert_contains(first, "compiling Bluespec package DefineLib", "initial define build")
-    assert_contains(first, "compiling Bluespec package DefineRepro", "initial define build")
+    assert_not_contains(first, "compiling Bluespec package DefineRepro", "initial define build")
     assert_contains(first, "building Bluespec verilog define-repro", "initial define build")
 
     local cached = run(projectdir, {"build", "define-repro"}, {context = "cached define build"})
@@ -473,7 +473,7 @@ local function test_defines(root, workroot, run)
     assert_contains(rebuilt, "scanning Bluespec define-lib", "define invalidation")
     assert_contains(rebuilt, "scanning Bluespec define-repro", "define invalidation")
     assert_contains(rebuilt, "compiling Bluespec package DefineLib", "define invalidation")
-    assert_contains(rebuilt, "compiling Bluespec package DefineRepro", "define invalidation")
+    assert_not_contains(rebuilt, "compiling Bluespec package DefineRepro", "define invalidation")
     assert_contains(rebuilt, "building Bluespec verilog define-repro", "define invalidation")
 
     local cached_again = run(projectdir, {"build", "define-repro"}, {context = "changed define cache hit"})
@@ -536,7 +536,8 @@ local function test_backends(root, workroot, run)
     assert_file(executable .. ".so", "Bluesim shared object")
     local initial_sim_output = run(projectdir, {"run", "sim"}, {context = "xmake run sim"})
     assert_contains(initial_sim_output, "BACKEND_VALUE=1", "initial Bluesim behavior")
-    local sim_ba = assert_single_file(path.join(projectdir, "build", "**", "bdir", "mkTop.ba"),
+    local sim_ba = assert_single_file(path.join(projectdir, "build", ".gens", "sim", "**",
+        "bluespec", "elaboration", "sim", "mkTop.ba"),
         "initial Bluesim elaboration artifact")
     local initial_sim_ba = assert(io.readfile(sim_ba), "missing initial Bluesim .ba")
     local sim_cached = run(projectdir, {"build", "sim"}, {context = "cached Bluesim build"})
@@ -590,7 +591,7 @@ local function test_backends(root, workroot, run)
         envs = alternate_envs,
     })
     assert_contains(sdk_changed, "scanning Bluespec rtl", "alternate Verilog BLUESPECDIR")
-    assert_contains(sdk_changed, "compiling Bluespec package Top", "alternate Verilog BLUESPECDIR")
+    assert_not_contains(sdk_changed, "compiling Bluespec package Top", "alternate Verilog BLUESPECDIR")
     assert_contains(sdk_changed, "building Bluespec verilog rtl", "alternate Verilog BLUESPECDIR")
     assert_verilog_sdk(sdk_changed, alternate_sdk_dir, "alternate public BSC Verilog SDK")
     assert_verilog_filelist(default_filelist, default_rtl_dir,
@@ -630,7 +631,7 @@ local function test_backends(root, workroot, run)
 
     local define_sim = run(projectdir, {"build", "sim"}, {context = "Bluesim define invalidation"})
     assert_contains(define_sim, "scanning Bluespec sim", "Bluesim define invalidation")
-    assert_contains(define_sim, "compiling Bluespec package Top", "Bluesim define invalidation")
+    assert_not_contains(define_sim, "compiling Bluespec package Top", "Bluesim define invalidation")
     assert_contains(define_sim, "building Bluespec bluesim sim", "Bluesim define invalidation")
     local changed_sim_output = run(projectdir, {"run", "sim"}, {context = "changed define xmake run sim"})
     assert_contains(changed_sim_output, "BACKEND_VALUE=2", "changed Bluesim behavior")
@@ -645,7 +646,7 @@ local function test_backends(root, workroot, run)
     local define_rtl = run(projectdir, {"build", "rtl_consumer"},
         {context = "Verilog define invalidation"})
     assert_contains(define_rtl, "scanning Bluespec rtl", "Verilog define invalidation")
-    assert_contains(define_rtl, "compiling Bluespec package Top", "Verilog define invalidation")
+    assert_not_contains(define_rtl, "compiling Bluespec package Top", "Verilog define invalidation")
     assert_contains(define_rtl, "building Bluespec verilog rtl", "Verilog define invalidation")
     assert_contains(define_rtl, "processing Verilog targetfile " .. default_filelist,
         "Verilog define invalidation")
@@ -668,7 +669,7 @@ local function test_backends(root, workroot, run)
     local invalidated = run(projectdir, {"build", "rtl_consumer"},
         {context = "Verilog backend invalidation"})
     assert_contains(invalidated, "scanning Bluespec rtl", "Verilog backend invalidation")
-    assert_contains(invalidated, "compiling Bluespec package Top", "Verilog backend invalidation")
+    assert_not_contains(invalidated, "compiling Bluespec package Top", "Verilog backend invalidation")
     assert_contains(invalidated, "building Bluespec verilog rtl", "Verilog backend invalidation")
     assert_contains(invalidated, "processing Verilog targetfile " .. default_filelist,
         "downstream Verilog invalidation")
@@ -766,7 +767,7 @@ local function test_cxx_driver(root, workroot, run)
     run(projectdir, {"config", "-c"}, options(wrapper_b, "configure selected CXX B"))
     local changed = run(projectdir, {"build", "sim"}, options(wrapper_b, "selected CXX change"))
     assert_contains(changed, "building Bluespec bluesim sim", "selected CXX change")
-    assert_contains(changed, "compiling Bluespec package Top", "selected CXX change")
+    assert_not_contains(changed, "compiling Bluespec package Top", "selected CXX change")
     assert_file(marker_b, "selected CXX B invocation")
     if os.isfile(blocker_marker) then
         raise("BSC used ambient CXX after the target toolchain changed")
@@ -798,13 +799,14 @@ local function test_native_bdpi_builddir(root, workroot, run)
 
     local initial = run(projectdir, {"build", "-v", "native_bdpi"}, {context = "native BDPI build"})
     assert_contains(initial, "scanning Bluespec native_bdpi", "native BDPI build")
-    assert_contains(initial, "compiling Bluespec package NativeBDPI", "native BDPI build")
+    assert_not_contains(initial, "compiling Bluespec package NativeBDPI", "native BDPI build")
     assert_contains(initial, "building Bluespec bluesim native_bdpi", "native BDPI build")
     assert_contains(initial, "-fPIC", "native BDPI PIC build")
 
     local builddir = path.join(projectdir, "build")
-    local old_bo = assert_single_file(path.join(builddir, "**", "bdir", "NativeBDPI.bo"),
-        "default builddir package")
+    local old_bo = assert_single_file(path.join(builddir, ".gens", "native_bdpi", "**",
+        "bluespec", "elaboration", "sim", "NativeBDPI.bo"),
+        "default builddir top package")
     local old_golden = assert_single_file(path.join(builddir, "**", "libgolden.a"),
         "direct native archive")
     local old_helper = assert_single_file(path.join(builddir, "**", "libgolden_helper.a"),
@@ -848,13 +850,14 @@ local function test_native_bdpi_builddir(root, workroot, run)
     run(projectdir, {"config", "-c", "-o", "alt-build"}, {context = "configure alt builddir"})
     local alt = run(projectdir, {"build", "-v", "native_bdpi"}, {context = "alt builddir"})
     assert_contains(alt, "scanning Bluespec native_bdpi", "alt builddir")
-    assert_contains(alt, "compiling Bluespec package NativeBDPI", "alt builddir")
+    assert_not_contains(alt, "compiling Bluespec package NativeBDPI", "alt builddir")
     assert_contains(alt, "building Bluespec bluesim native_bdpi", "alt builddir")
     assert_not_contains(alt, path.directory(old_bo), "alt builddir package command")
 
     local alt_builddir = path.join(projectdir, "alt-build")
-    local alt_bo = assert_single_file(path.join(alt_builddir, "**", "bdir", "NativeBDPI.bo"),
-        "alt builddir package")
+    local alt_bo = assert_single_file(path.join(alt_builddir, ".gens", "native_bdpi", "**",
+        "bluespec", "elaboration", "sim", "NativeBDPI.bo"),
+        "alt builddir top package")
     assert_single_file(path.join(alt_builddir, "**", "libgolden.a"), "alt direct native archive")
     assert_single_file(path.join(alt_builddir, "**", "libgolden_helper.a"), "alt transitive native archive")
     assert_single_file(path.join(alt_builddir, "**", "simdir", "model_mkNativeBDPI.cxx"),
@@ -936,8 +939,9 @@ local function test_bsc_native_toolchain(root, workroot, run)
         context = "run hostile-environment Bluesim",
         envs = {CC = hostile, CXX = hostile},
     }), "TOOLCHAIN_OK", "run hostile-environment Bluesim")
-    local package_bo = assert_single_file(path.join(projectdir, "build", "**", "bdir", "ToolchainTop.bo"),
-        "toolchain package output")
+    local package_bo = assert_single_file(path.join(projectdir, "build", ".gens", "toolchain_sim", "**",
+        "bluespec", "elaboration", "sim", "ToolchainTop.bo"),
+        "toolchain top package output")
     local model = assert_single_file(path.join(projectdir, "build", "**", "simdir", "model_mkToolchainTop.cxx"),
         "toolchain generated model")
     local executable = path.join(projectdir, "build", "bin", "toolchain_sim")
@@ -971,10 +975,10 @@ local function test_bsc_native_toolchain(root, workroot, run)
         envs = {CC = hostile, CXX = hostile},
     })
     assert_contains(changed, "scanning Bluespec toolchain_sim", "compiler identity graph invalidation")
-    assert_contains(changed, "compiling Bluespec package ToolchainTop", "compiler identity package invalidation")
+    assert_not_contains(changed, "compiling Bluespec package ToolchainTop", "compiler identity keeps root in top context")
     assert_contains(changed, "building Bluespec bluesim toolchain_sim", "compiler identity backend invalidation")
     if os.mtime(package_bo) == package_mtime then
-        raise("compiler identity change did not rebuild the package output")
+        raise("compiler identity change did not rebuild the top package output")
     end
     if os.mtime(model) == model_mtime or os.mtime(executable) == executable_mtime then
         raise("compiler identity change did not regenerate/relink the Bluesim model")
@@ -1023,10 +1027,14 @@ local function analyze_fake_bsc(logfile, context, opt)
     local events = fake_bsc_events(logfile, context)
     for _, event in ipairs(events) do
         local key = table.concat({event.target, event.kind, event.phase or ""}, "|")
+        -- Flavored package compilation elaborates synthesis boundaries and
+        -- shares the backend semaphore with final model generation.
+        local uses_backend = event.kind == "backend" or
+            event.phase == "package-sim" or event.phase == "package-verilog"
         if event.event == "start" then
             active = active + 1
             maximum = math.max(maximum, active)
-            if event.kind == "backend" then
+            if uses_backend then
                 active_backend = active_backend + 1
                 maximum_backend = math.max(maximum_backend, active_backend)
             end
@@ -1041,7 +1049,7 @@ local function analyze_fake_bsc(logfile, context, opt)
             starts[key] = (starts[key] or 0) + 1
         elseif event.event == "end" then
             active = active - 1
-            if event.kind == "backend" then
+            if uses_backend then
                 active_backend = active_backend - 1
             end
             local target_active = active_by_target[event.target] or {}
@@ -1488,7 +1496,7 @@ local function test_bsc_concurrency(root, workroot, run)
     end
     for index = 1, 4 do
         local target = "rtl" .. index
-        local package_key = table.concat({target, "package", "package"}, "|")
+        local package_key = table.concat({target, "package", "package-verilog"}, "|")
         local backend_key = table.concat({target, "backend", "verilog-generate"}, "|")
         if capped.starts[package_key] ~= 1 or capped.starts[backend_key] ~= 1 then
             raise("cross-target backend cap: target(%s) was not scheduled exactly once (package=%s backend=%s)",
@@ -1841,6 +1849,18 @@ function main()
     os.mkdir(workroot)
     local run = runner(root, workroot)
     local tests = {
+        {"dependency parser/include inputs", function()
+            import("parser", {rootdir = path.join(root, "tests")}).main()
+        end},
+        {"same-basename include/Bluetcl/check/Verilog", function()
+            import("include_fragments", {rootdir = path.join(root, "tests")}).main()
+        end},
+        {"scanner flags/errors/cache identity", function()
+            import("scanner", {rootdir = path.join(root, "tests")}).main()
+        end},
+        {"synthesis boundaries/output recovery", function()
+            import("boundaries", {rootdir = path.join(root, "tests")}).main()
+        end},
         {"declaration-relative path APIs", function() test_path_relative(root, workroot, run) end},
         {"incremental graph/cache", function() test_incremental(root, workroot, run) end},
         {"generated BSV", function() test_generated(root, workroot, run) end},
@@ -1850,6 +1870,9 @@ function main()
         {"target CXX selection/cache identity", function() test_cxx_driver(root, workroot, run) end},
         {"BSC native toolchain identity", function() test_bsc_native_toolchain(root, workroot, run) end},
         {"SystemC native package propagation", function() test_systemc_package(root, workroot, run) end},
+        {"SystemC synthesized module isolation", function()
+            import("systemc_isolation", {rootdir = path.join(root, "tests")}).main()
+        end},
         {"project-wide BSC/backend concurrency", function() test_bsc_concurrency(root, workroot, run) end},
         {"cross-target Bluetcl scan concurrency", function() test_scan_concurrency(root, workroot, run) end},
         {"Bluespec rule kind ownership", function() test_kind_ownership(root, workroot, run) end},

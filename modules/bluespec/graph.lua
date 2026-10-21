@@ -70,6 +70,19 @@ local function dep_graphs(target)
     return result
 end
 
+local function provider_source_dirs(graph)
+    local dirs = {}
+    for name, package in pairs(graph.packages or {}) do
+        if graph.exports[name] and package.source then
+            table.insert(dirs, path.directory(package.source))
+        end
+    end
+    for _, provider in pairs(graph.providers or {}) do
+        if provider.source then table.insert(dirs, path.directory(provider.source)) end
+    end
+    return util.unique_sorted(dirs)
+end
+
 local function effective_config(target, deps)
     local dirs, own_defines, own_options, own_link_options = own_config(target)
     local effective_dirs = {}
@@ -100,6 +113,7 @@ local function effective_config(target, deps)
     append(exported_link_options, own_link_options.interface)
     local dep_contexts = {}
     local dependency_exported_dirs = {}
+    local dependency_scan_source_dirs = {}
     local scanner_dirs = {}
     for _, item in ipairs(deps) do
         local graph = item.graph
@@ -131,6 +145,13 @@ local function effective_config(target, deps)
         -- package compilation continues to consume only provider .bo files.
         append(scanner_dirs, graph.exported_dirs)
         append(dependency_exported_dirs, graph.exported_dirs)
+        -- A library exports its owned packages even when their source search
+        -- paths are private. Before its first .bo exists, Bluetcl otherwise
+        -- silently omits imports of those packages. Expose their source dirs
+        -- only to scanning; finalize still validates the actual providers.
+        local source_dirs = provider_source_dirs(graph)
+        append(scanner_dirs, source_dirs)
+        append(dependency_scan_source_dirs, source_dirs)
         append(effective_defines, graph.exported_defines)
         append_groups(effective_option_groups, graph_exported_option_groups(graph))
         append(effective_link_options, graph.exported_link_options)
@@ -156,6 +177,7 @@ local function effective_config(target, deps)
         exported_options = util.flatten_option_groups(exported_option_groups),
         exported_link_options = util.unique_sorted(exported_link_options),
         dependency_exported_dirs = util.unique_sorted(dependency_exported_dirs),
+        dependency_scan_source_dirs = util.unique_sorted(dependency_scan_source_dirs),
         dep_contexts = util.sorted(dep_contexts),
     }
 end
@@ -180,6 +202,7 @@ local function declared_exports(target, visiting)
         defines = {},
         option_groups = {},
         library_outputs = {},
+        scan_dirs = {},
     }
     append(result.dirs, dirs.public)
     append(result.dirs, dirs.interface)
@@ -189,6 +212,9 @@ local function declared_exports(target, visiting)
     append_groups(result.option_groups, option_groups.interface)
     if data(target, "bluespec.rule") == "bluespec.library" then
         table.insert(result.library_outputs, util.bdir(target))
+        -- A declaration-only superset of the eventual exported package
+        -- source dirs keeps scan cohorts sensitive to private library paths.
+        append(result.scan_dirs, dirs.all)
     end
     for _, dep in ipairs(ordered_deps(target)) do
         if is_bluespec(dep) then
@@ -197,12 +223,14 @@ local function declared_exports(target, visiting)
             append(result.defines, exported.defines)
             append_groups(result.option_groups, exported.option_groups)
             append(result.library_outputs, exported.library_outputs)
+            append(result.scan_dirs, exported.scan_dirs)
         end
     end
     visiting[target_name] = nil
     result.dirs = util.unique_sorted(result.dirs)
     result.defines = util.unique_sorted(result.defines)
     result.library_outputs = util.unique_sorted(result.library_outputs)
+    result.scan_dirs = util.unique_sorted(result.scan_dirs)
     declared_exports_cache[target_name] = result
     return result
 end
@@ -225,13 +253,14 @@ local function scan_cohort_key(target)
             local exported = declared_exports(dep)
             append(effective_dirs, exported.library_outputs)
             append(scanner_dirs, exported.dirs)
+            append(scanner_dirs, exported.scan_dirs)
             append(effective_defines, exported.defines)
             append_groups(effective_option_groups, exported.option_groups)
         end
     end
     append(scanner_dirs, effective_dirs)
     return table.concat({
-        "bluespec-scan-cohort-v1",
+        "bluespec-scan-cohort-v2",
         "root=" .. util.canonical_root(target),
         "search=" .. table.concat(util.unique_sorted(scanner_dirs), "\n"),
         "defines=" .. table.concat(util.unique_sorted(effective_defines), "\n"),
@@ -272,6 +301,14 @@ local function is_under(pathname, dirs)
         if pathname == dir or pathname:sub(1, #dir + 1) == dir .. "/" then
             return true
         end
+    end
+    return false
+end
+
+local function is_in_source_dirs(source, dirs)
+    local directory = path.normalize(path.directory(source))
+    for _, dir in ipairs(dirs or {}) do
+        if directory == path.normalize(dir) then return true end
     end
     return false
 end
@@ -415,7 +452,13 @@ local function finalize(target, parsed, config, deps)
                         name, provider.target_name, target:name(), package.source)
                 end
             end
-        elseif package.source and is_under(package.source, config.dependency_exported_dirs) then
+        elseif package.source and (is_under(package.source, config.dependency_exported_dirs) or
+            (is_under(package.source, config.dependency_scan_source_dirs) and
+                not is_in_source_dirs(package.source, config.own_dirs))) then
+            -- Explicit public directories retain dependency ownership. A
+            -- private scan hint only fences otherwise unowned source paths:
+            -- providers and consumers can own distinct colocated packages.
+            -- BSC source search paths do not include descendant directories.
             raise("package %s is located in a dependency package directory but is not exported by that target", name)
         elseif builtin[name] then
             if package.source and not is_under(package.source, tools.builtin_dirs()) then
@@ -466,7 +509,7 @@ local function finalize(target, parsed, config, deps)
     })
 
     return {
-        schema = 7,
+        schema = 10,
         target = target:fullname(),
         root = parsed.root,
         root_name = parsed.root_name,
@@ -490,6 +533,7 @@ local function finalize(target, parsed, config, deps)
         exported_options = config.exported_options,
         exported_link_options = config.exported_link_options,
         dependency_exported_dirs = config.dependency_exported_dirs,
+        dependency_scan_source_dirs = config.dependency_scan_source_dirs,
         dep_contexts = config.dep_contexts,
         fingerprint = fingerprint,
     }
