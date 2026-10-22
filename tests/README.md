@@ -6,6 +6,10 @@ Run the automated regression suite with the BSC and SystemC SDKs available:
 nix-shell -p xmake bluespec systemc --run 'xmake regression'
 ```
 
+For a focused group, pass a name substring to the Lua runner, for example
+`xmake lua tests/regression.lua incremental`. `xmake regression` always runs
+the complete suite.
+
 For the dependency parser alone, without compilation or parallel build jobs:
 
 ```sh
@@ -52,6 +56,21 @@ The provider is built before consumers and keeps its source paths private,
 covering partial scanner closures containing only imported `.bo` edges. A
 consumer with the library's root source also verifies that its private defines
 select its own elaboration rather than the provider's prebuilt `.ba`.
+
+For real-BSC consumer-selected package variants (requires the SystemC SDK):
+
+```sh
+xmake lua tests/package_demand.lua
+```
+
+This checks a cold simulation-only default build without neutral compilation,
+same-flavor sharing through two library layers, separate defines/options for
+the same source in different provider targets, check/sim/Verilog coexistence,
+SystemC reuse of sim providers, explicit library builds, builddir relocation,
+and quiet unchanged/default/all/group builds. The boundary test also asserts
+that a cold Bluesim dependency closure never produces neutral provider `.bo`.
+Real compiler builds in the main runner default to `-j2`; synthetic concurrency
+probes explicitly retain their higher job counts.
 
 For serial, real-SystemC model isolation checks:
 

@@ -11,6 +11,48 @@ local progress = import("utils.progress")
 local pending_orders = {}
 local package_flavor_contract = "bluespec-package-flavor-v1"
 local systemc_isolation_contract = "bluespec-systemc-isolation-v1"
+local neutral_demands = {}
+
+-- A library reached through a backend only supplies that backend's package
+-- view. A requested library (also through ordinary aggregators), or a check,
+-- still demands neutral packages. Use Xmake's own root selection so default,
+-- all-target and group builds agree with the graph it is constructing.
+local function needs_neutral(target, jobgraph)
+    local demands = neutral_demands[jobgraph]
+    if not demands then
+        demands = {}
+        neutral_demands[jobgraph] = demands
+        local visited = {}
+        local function visit(current, neutral)
+            local rule = current:data("bluespec.rule")
+            if rule == "bluespec.check" then
+                neutral = true
+            elseif rule and rule ~= "bluespec.library" then
+                neutral = false
+            end
+            local key = current:fullname() .. "/" .. tostring(neutral)
+            if visited[key] then return end
+            visited[key] = true
+            if neutral and rule == "bluespec.library" then
+                demands[current:fullname()] = true
+            end
+            -- deps()/orderdeps() are flattened transitive closures; walking
+            -- those would bypass the backend that selected a library flavor.
+            for _, depname in ipairs(current:get("deps") or {}) do
+                visit(current:dep(depname), neutral)
+            end
+        end
+        local option = import("core.base.option")
+        local name, group = option.get("target"), option.get("group")
+        if group then
+            name = nil
+            group = "^" .. path.pattern(group) .. "$"
+        end
+        local roots = import("private.action.build.target").get_root_targets(name, {group_pattern = group})
+        for _, root in ipairs(roots) do visit(root, true) end
+    end
+    return demands[target:fullname()]
+end
 
 local function package_job(target, name, flavor)
     return target:fullname() .. "/bluespec/" .. (flavor and flavor .. "/" or "") .. "package/" .. name
@@ -784,7 +826,7 @@ function schedule_build(target, jobgraph, backend)
         graph = package_view(target, graph, backend == "verilog" and "verilog" or "sim")
         local package_jobs = schedule_packages(target, jobgraph, graph)
         schedule_backend(target, jobgraph, graph, backend, package_jobs)
-    else
+    elseif backend ~= "bluespec.library" or needs_neutral(target, jobgraph) then
         schedule_packages(target, jobgraph, graph)
     end
 end

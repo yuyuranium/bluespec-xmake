@@ -32,8 +32,8 @@ function main()
         assert(#files == 1, "expected one " .. pattern .. "; logs in " .. work)
         return files[1]
     end
-    local function cache_hit()
-        local output = run({"build", "-j1", "all"})
+    local function cache_hit(target)
+        local output = run({"build", "-j1", target or "all"})
         for _, message in ipairs({"scanning Bluespec", "compiling Bluespec", "building Bluespec"}) do
             assert(not output:find(message, 1, true), "unchanged build: " .. output)
         end
@@ -97,11 +97,28 @@ function main()
     -- No provider .bo exists during the first prepare phase. Its exported
     -- packages must still appear in the consumer's scan, even though their
     -- source directory is private and compilation only accepts provider .bo.
-    local cold = run({"build", "-j1", "sim_a"})
+    local cold = run({"build", "-j1", "sims"})
+    assert(not cold:find("phase=package ", 1, true),
+        "sim-only build compiled backend-neutral packages: " .. cold)
     assert(cold:find("provider/bluespec/sim/package/Child", 1, true),
         "cold consumer did not schedule its imported provider package: " .. cold)
+    local _, sim_count = cold:gsub("BSC_TRACE START target=provider job=provider/bluespec/sim/package/Child phase=package%-sim", "")
+    assert(sim_count == 1, "cold same-flavor consumers compiled their provider more than once")
+    assert(#os.files(path.join(project, "build/**/bdir/Child.bo")) == 0,
+        "sim-only build produced a neutral provider artifact")
     assert(run({"run", "sim_a"}):find("BOUNDARY_OK", 1, true),
         "cold consumer did not execute its imported synthesized child")
+    cache_hit("sims")
+    -- A subsequently requested check needs neutral providers even when the
+    -- sim flavor is cached; the two contexts must coexist without replacing it.
+    local checked = run({"build", "-j1", "checked_sims"})
+    assert(checked:find("provider/bluespec/package/Child phase=package ", 1, true),
+        "check did not request its neutral provider")
+    assert(not checked:find("phase=package-sim ", 1, true),
+        "adding a check rebuilt a cached sim provider")
+    one("**/bdir/Child.bo")
+    one("**/packages/sim/Child/mkChild.ba")
+    cache_hit("checked_sims")
     -- Reset artifacts before the separate prebuilt-provider/partial-scan case.
     os.rm(path.join(project, "build"))
     run({"config", "-c", "-y", "--bluespec_backend_jobs=1", "--bluespec_bsc_jobs=1",

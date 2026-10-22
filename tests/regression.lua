@@ -112,6 +112,18 @@ local function runner(root, workroot)
     local sequence = 0
     return function(projectdir, arguments, opt)
         opt = opt or {}
+        -- Keep real compiler tests bounded. The synthetic concurrency probes
+        -- explicitly supply -j and retain their larger scheduler stress cases.
+        if arguments[1] == "build" then
+            local explicit_jobs = false
+            for _, argument in ipairs(arguments) do
+                if argument:find("^-j") or argument:find("^--jobs") then explicit_jobs = true end
+            end
+            if not explicit_jobs then
+                arguments = table.clone(arguments)
+                table.insert(arguments, 2, "-j2")
+            end
+        end
         if os.host() == "macosx" and arguments[1] == "config" then
             arguments = table.clone(arguments)
             local defaults = {
@@ -326,6 +338,7 @@ local function test_incremental(root, workroot, run)
     }), "post-recovery cache hit")
 
     local leaf = path.join(projectdir, "src", "library", "Leaf.bsv")
+    local neutral_leaf_stamp = os.mtime(old_leaf_bo)
     os.sleep(1100)
     io.writefile(leaf, [[package Leaf;
 
@@ -342,13 +355,19 @@ endpackage
     assert_not_contains(changed, "compiling Bluespec package Top", "source invalidation")
     assert_contains(changed, "building Bluespec verilog rtl", "source invalidation")
     assert_not_contains(changed, "compiling Bluespec package Other", "source invalidation")
+    if os.mtime(old_leaf_bo) ~= neutral_leaf_stamp then
+        raise("Verilog-only build unexpectedly updated the neutral provider")
+    end
 
+    -- RTL only updated the Verilog flavor. A later check now demands the
+    -- changed neutral closure; unrelated packages remain cached in both.
     local consumer_changed = run(projectdir, {"build", "consumer"}, {context = "provider invalidation"})
     assert_contains(consumer_changed, "scanning Bluespec consumer", "provider invalidation")
     assert_contains(consumer_changed, "compiling Bluespec package Consumer", "provider invalidation")
-    assert_not_contains(consumer_changed, "compiling Bluespec package Leaf", "provider invalidation")
-    assert_not_contains(consumer_changed, "compiling Bluespec package Base", "provider invalidation")
+    assert_contains(consumer_changed, "compiling Bluespec package Leaf", "provider invalidation")
+    assert_contains(consumer_changed, "compiling Bluespec package Base", "provider invalidation")
     assert_not_contains(consumer_changed, "compiling Bluespec package Other", "provider invalidation")
+    assert_bluespec_cache_hit(run(projectdir, {"build", "consumer"}), "updated neutral cache hit")
 
     local base = path.join(projectdir, "src", "library", "Base.bsv")
     os.sleep(1100)
@@ -1842,7 +1861,7 @@ local function test_failure(root, workroot, run, name, expected)
     assert_contains(output, expected, name)
 end
 
-function main()
+function main(filter)
     local root = os.projectdir()
     local workroot = path.join(root, "build", "regression")
     os.rm(workroot)
@@ -1860,6 +1879,9 @@ function main()
         end},
         {"synthesis boundaries/output recovery", function()
             import("boundaries", {rootdir = path.join(root, "tests")}).main()
+        end},
+        {"consumer-selected package flavors", function()
+            import("package_demand", {rootdir = path.join(root, "tests")}).main()
         end},
         {"declaration-relative path APIs", function() test_path_relative(root, workroot, run) end},
         {"incremental graph/cache", function() test_incremental(root, workroot, run) end},
@@ -1886,6 +1908,14 @@ function main()
                 "package Hidden is located in a dependency package directory but is not exported")
         end},
     }
+    if filter then
+        local selected = {}
+        for _, item in ipairs(tests) do
+            if item[1]:find(filter, 1, true) then table.insert(selected, item) end
+        end
+        assert(#selected > 0, "no regression matches " .. filter)
+        tests = selected
+    end
     for index, item in ipairs(tests) do
         cprint("${bright}[%d/%d]${clear} %s", index, #tests, item[1])
         item[2]()

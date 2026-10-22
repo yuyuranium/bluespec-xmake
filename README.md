@@ -7,6 +7,17 @@ adds package jobs ordered by the import DAG, sharing backend-specific package
 variants across consumers of the same library.
 No public manifest or JSON analysis file is generated.
 
+Package compilation follows the selected build roots. A library reached only
+through Bluesim/SystemC consumers builds its `sim` variant; Verilog consumers
+request `verilog`. Consumers share each provider target's jobs within a flavor,
+while different provider targets keep their own defines/options and artifacts.
+A directly requested library, a library requested through an ordinary
+aggregator without a backend, or a `bluespec.check` dependency closure also
+builds backend-neutral packages. Thus a mixed check/simulation build keeps both
+versions, but a simulation-only build does not pay for unused neutral packages.
+Default, all-target, and group builds use Xmake's selected root targets for the
+same decision. Existing neutral artifacts are retained for later checks.
+
 ## Development shell
 
 The repository follows the active `<nixpkgs>` channel:

@@ -30,3 +30,19 @@ end
 target("all")
     set_kind("phony")
     add_deps("sim_a", "sim_b", "rtl", "shared_root", "shared_root_rtl")
+
+target("sims")
+    set_default(false)
+    set_kind("phony")
+    add_deps("sim_a", "sim_b")
+
+target("check")
+    set_default(false)
+    add_rules("bluespec.check")
+    set_bsc_root("src/check/Check.bsv")
+    add_deps("provider")
+
+target("checked_sims")
+    set_default(false)
+    set_kind("phony")
+    add_deps("check", "sims")
