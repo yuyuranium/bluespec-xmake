@@ -5,7 +5,8 @@ Lua.  The prepare stage invokes `bluetcl`, parses its Tcl dependency list in
 Lua, and stores the package graph in Xmake memory/local cache.  The build stage
 adds package jobs ordered by the import DAG, sharing backend-specific package
 variants across consumers of the same library.
-No public manifest or JSON analysis file is generated.
+No public dependency manifest is generated. Builds also export an editor
+compilation database, described below.
 
 Package compilation follows the selected build roots. A library reached only
 through Bluesim/SystemC consumers builds its `sim` variant; Verilog consumers
@@ -194,7 +195,7 @@ changing BSC scheduling.
 
 ## Artifacts and incremental state
 
-Only build artifacts are exposed: `.bo`, Bluesim output (the executable defaults
+Build artifacts include `.bo`, Bluesim output (the executable defaults
 to `build/bin/<target>`), Verilog plus a sorted `.f` filelist, or SystemC
 generated sources/headers and a static archive.  For `bluespec.verilog`, the
 filelist is the target's standard `targetfile()`; its default location is
@@ -239,3 +240,43 @@ invalidate the relevant scan or package/backend job.
 Xmake can only clean targets present in the currently loaded project.  Run
 `xmake clean -a` before deleting a target definition, or remove the configured
 build directory afterward if obsolete target state must be reclaimed.
+
+## Editor compilation database
+
+Including `rules/bluespec.lua` adds a `bsc_compile_commands` target. A default
+build, or a build of any Bluespec target, automatically refreshes
+`build/bsc_compile_commands.json`. To export without scanning imports or
+compiling packages (including when a source has syntax errors), run:
+
+```sh
+xmake build bsc_compile_commands
+```
+
+Configure alone does not write the database. The output follows Xmake's
+configured build directory (`xmake f -o <directory>`); none-ls can discover the
+usual `build/` location from a source ancestor. For a different build directory,
+point the plugin's explicit database directory there. No source-tree symlink or
+C/C++ `compile_commands.json` is created. `xmake clean -a` removes the database.
+
+Each entry has an absolute `file`, the compiler's working `directory` (Xmake's
+project directory), and an `arguments` array preserving defines and ordered
+compile option groups, including PUBLIC/INTERFACE dependency settings. Search
+paths contain source directories from the dependency closure and `%/Libraries`, so diagnostics do
+not depend on previously compiled `.bo` files. Backend and output flags are not
+added; explicit user options remain verbatim. Relative paths inside opaque user
+options resolve from `directory`, just as in the build.
+
+The database covers all configured Bluespec targets, including non-default
+targets. It includes each declared root (even before generation) and existing
+`.bsv` files directly inside its root/package directories. Directory discovery
+is nonrecursive, matching BSC package search. Generated files are discovered
+after the build's prepare phase; the standalone export does not run generators.
+This declaration-based export also includes currently unimported files, so they
+can be edited without a successful dependency scan.
+
+Each file gets one context: explicit roots take precedence over directory
+discovery; within either group libraries precede other targets, then full target
+name decides. Conflicting settings emit a warning. Every export replaces the
+whole database, removing stale entries; unchanged contents retain their timestamp.
+As with the CMake exporter, a diagnostic run with `-u` applies the selected
+file's flags to its imports, rather than reproducing separate provider flags.

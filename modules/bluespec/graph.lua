@@ -235,11 +235,14 @@ local function declared_exports(target, visiting)
     return result
 end
 
-local function scan_cohort_key(target)
+-- Declaration-only context shared by scan grouping and editor export. Source
+-- paths remain separate from package outputs so diagnostics can run cold.
+function declared_config(target)
     local dirs, defines, option_groups = own_config(target)
     local effective_dirs = {}
     append(effective_dirs, dirs.all)
     local scanner_dirs = {}
+    local source_dirs = table.clone(dirs.all)
     local effective_defines = {}
     append(effective_defines, defines.private)
     append(effective_defines, defines.public)
@@ -254,17 +257,31 @@ local function scan_cohort_key(target)
             append(effective_dirs, exported.library_outputs)
             append(scanner_dirs, exported.dirs)
             append(scanner_dirs, exported.scan_dirs)
+            append(source_dirs, exported.dirs)
+            append(source_dirs, exported.scan_dirs)
             append(effective_defines, exported.defines)
             append_groups(effective_option_groups, exported.option_groups)
         end
     end
     append(scanner_dirs, effective_dirs)
+    return {
+        own_dirs = dirs.all,
+        source_dirs = util.unique_sorted(source_dirs),
+        scanner_dirs = util.unique_sorted(scanner_dirs),
+        effective_defines = util.unique_sorted(effective_defines),
+        effective_option_groups = effective_option_groups,
+        effective_options = util.flatten_option_groups(effective_option_groups),
+    }
+end
+
+local function scan_cohort_key(target)
+    local config = declared_config(target)
     return table.concat({
         "bluespec-scan-cohort-v2",
         "root=" .. util.canonical_root(target),
-        "search=" .. table.concat(util.unique_sorted(scanner_dirs), "\n"),
-        "defines=" .. table.concat(util.unique_sorted(effective_defines), "\n"),
-        "options=" .. util.option_groups_identity(effective_option_groups),
+        "search=" .. table.concat(config.scanner_dirs, "\n"),
+        "defines=" .. table.concat(config.effective_defines, "\n"),
+        "options=" .. util.option_groups_identity(config.effective_option_groups),
     }, "\n")
 end
 

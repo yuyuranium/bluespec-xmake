@@ -21,6 +21,18 @@ implicit source-only packages in partial dependency closures. Same-basename
 includes are tested before and after the declaring source, in both supported
 record formats; explicit declarations take precedence over implicit fallback.
 
+For editor compilation database export:
+
+```sh
+xmake lua tests/compile_commands.lua
+```
+
+This checks standalone, default and targeted build export; source-based BSC
+diagnostics before any build; private/public/interface flags and multi-token
+options; conflicting contexts; invalid and generated roots; paths/defines with
+spaces; stale entry removal; clean/recreate; stable timestamps; and builddir/cwd
+relocation. The standalone export performs no import scan or package compile.
+
 For real Bluetcl and BSC same-basename include checks:
 
 ```sh
@@ -158,5 +170,5 @@ consumer directly through a PUBLIC phony aggregator, proving that native object
 compilation waits until the generated SystemC headers exist.
 
 The fixture intentionally has no external scanner or manifest-generation
-script.  Xmake's normal `.xmake`/dependfile state and the backend artifacts are
-the only files created by a build.
+script. Builds create Xmake's normal `.xmake`/dependfile state, backend artifacts,
+and the editor's `bsc_compile_commands.json` database.

@@ -2,6 +2,16 @@
 
 add_moduledirs(path.join(os.scriptdir(), "../modules"))
 
+target("bsc_compile_commands")
+    set_kind("phony")
+    on_build(function()
+        import("bluespec.compile_commands").generate()
+    end, {jobgraph = true})
+    on_clean(function()
+        os.rm(import("bluespec.compile_commands").filename())
+    end)
+target_end()
+
 option("bluespec_backend_jobs")
     -- Xmake 3.0.4's menu adapter treats every non-string project-option
     -- default as a boolean checkbox.  Keep numeric resource limits as strings
@@ -259,6 +269,12 @@ local function define_rule(name, backend, required_kind, needs_top)
 
         on_build(function(target, jobgraph)
             import("bluespec.jobs").schedule_build(target, jobgraph, backend)
+        end, {jobgraph = true})
+
+        -- Build graph construction follows all prepare jobs, including BSV
+        -- generators. Export once even for an explicit target or cache hit.
+        before_build(function()
+            import("bluespec.compile_commands").generate()
         end, {jobgraph = true})
 
         before_build_files(function(target, jobgraph, sourcebatch, opt)
