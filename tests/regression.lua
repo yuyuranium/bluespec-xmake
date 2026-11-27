@@ -1868,6 +1868,9 @@ function main(filter)
     os.mkdir(workroot)
     local run = runner(root, workroot)
     local tests = {
+        {"editor compilation database", function()
+            import("compile_commands", {rootdir = path.join(root, "tests")}).main()
+        end},
         {"dependency parser/include inputs", function()
             import("parser", {rootdir = path.join(root, "tests")}).main()
         end},
